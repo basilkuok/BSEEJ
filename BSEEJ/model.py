@@ -1326,7 +1326,7 @@ class Model(object):
                 for k in range(0, self.run_info['N_K']):
                     self.z[doc, v, k] = np.count_nonzero(tempz == k)
 
-    def update_theta(self):
+    def update_theta_gibbs(self):
         """Update \theta variable in the model"""
     
         # Sample from full conditional of Theta
