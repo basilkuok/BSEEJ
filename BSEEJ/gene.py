@@ -199,6 +199,10 @@ class Gene(object):
         nodes_df['start'] = self.samples_df.chromStart
         nodes_df['end'] = self.samples_df.chromEnd
         nodes_df['length'] = nodes_df['end'] - nodes_df['start']
+        if 'chrom' in self.samples_df.columns:
+            nodes_df['chrom'] = self.samples_df.chrom.astype(str).values
+        if 'strand' in self.samples_df.columns:
+            nodes_df['strand'] = self.samples_df.strand.astype(str).values
         
         # Sort primarily by chromosome to keep related loci together, then by end.
         sort_cols = ['end']
