@@ -60,6 +60,13 @@ class Gene(object):
         self.document = None
         self.id2w_dict = None
         self.w2id_dict = None
+        self.cooc_matrix = None
+        self.node_introns = []
+        self.reference_transcripts = {}
+        self.reference_intron_to_txs = {}
+        self.node_reference_txs = []
+        self.reference_k = None
+        self.effective_k = None
         self.n_w_list = None
         self.n_w = None
         self.n_v = None
