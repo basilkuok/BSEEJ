@@ -43,9 +43,16 @@ class Gene(object):
         self.min_coverage = int(min_coverage)
         self.samples_df, self.samples_df_dict = self.get_sample_df()
         self.nodes_df = self.get_junctions()
-        self.min_k = find_min_clusters(self.nodes_df)
-        self.trainable = self.is_trainable()
-        self.all_n_k = list(range(self.min_k, self.min_k + 19)) if self.trainable else []
+        # Whether to include chromosome in intron keys ("chr:start-end").
+        # We preserve the legacy "start-end" keys when all nodes are on a
+        # single chromosome (common for per-gene runs like A2ML1/SIRV).
+        self._use_chrom_in_keys = False
+        # Structural quantities depending on the interval graph (min_k,
+        # trainability, and candidate K values) are computed in preprocess()
+        # after the conflict matrix has been built once.
+        self.min_k = None
+        self.trainable = True
+        self.all_n_k = []
         self.intersection = None
         self.overlap_m = None
         self.mvc = None
