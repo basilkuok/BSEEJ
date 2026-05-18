@@ -332,13 +332,42 @@ def get_conflict_for_plot(nodes_df):
     V = nodes_df.shape[0]
     intersection_m = np.zeros([V, V], dtype=np.int32)
     edges_list = []
-    for v1 in range(nodes_df.shape[0]):
-        s1 = nodes_df.loc[v1, 'start']
-        e1 = nodes_df.loc[v1, 'end']
-        for v2 in range(v1 + 1, nodes_df.shape[0]):
-            s2 = nodes_df.loc[v2, 'start']
-            e2 = nodes_df.loc[v2, 'end']
-            if e1 > s2 and s1 < e2:
+
+    seg_indices = sorted(
+        int(col.split('_')[-1])
+        for col in nodes_df.columns
+        if col.startswith('seg_start_')
+    )
+    use_segments = len(seg_indices) > 0
+
+    for v1 in range(V):
+        for v2 in range(v1 + 1, V):
+            has_overlap = False
+            if use_segments:
+                for si in seg_indices:
+                    s1 = int(nodes_df.loc[v1, f"seg_start_{si}"])
+                    e1 = int(nodes_df.loc[v1, f"seg_end_{si}"])
+                    if e1 <= s1:
+                        continue
+                    for sj in seg_indices:
+                        s2 = int(nodes_df.loc[v2, f"seg_start_{sj}"])
+                        e2 = int(nodes_df.loc[v2, f"seg_end_{sj}"])
+                        if e2 <= s2:
+                            continue
+                        if e1 > s2 and s1 < e2:
+                            has_overlap = True
+                            break
+                    if has_overlap:
+                        break
+            else:
+                s1 = nodes_df.loc[v1, 'start']
+                e1 = nodes_df.loc[v1, 'end']
+                s2 = nodes_df.loc[v2, 'start']
+                e2 = nodes_df.loc[v2, 'end']
+                if e1 > s2 and s1 < e2:
+                    has_overlap = True
+
+            if has_overlap:
                 intersection_m[v1, v2] = 1
                 intersection_m[v2, v1] = 1
                 edges_list.append((v1, v2))
