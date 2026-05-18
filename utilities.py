@@ -323,8 +323,14 @@ def find_min_clusters(nodes_df):
 
 
 def get_conflict_for_plot(nodes_df):
-    """Find the intervals that have intersection"""
-    intersection_m = np.zeros([nodes_df.shape[0], nodes_df.shape[0]], dtype=np.int32)
+    """Find the intervals that have intersection.
+
+    When per-node segment columns (seg_start_i/seg_end_i) are present, treat
+    each node as a union of segments and declare a conflict when any pair of
+    segments overlaps. Otherwise, fall back to a single-interval check.
+    """
+    V = nodes_df.shape[0]
+    intersection_m = np.zeros([V, V], dtype=np.int32)
     edges_list = []
     for v1 in range(nodes_df.shape[0]):
         s1 = nodes_df.loc[v1, 'start']
