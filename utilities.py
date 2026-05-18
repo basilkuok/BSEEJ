@@ -318,12 +318,54 @@ def generalized_min_node_cover(intersection_m, i=2):
 
 
 def find_min_clusters(nodes_df):
-    _, edges_list = get_conflict_for_plot(nodes_df)
-    gra = generate_interval_graph_nx(nodes_df, edges_list, intervalviz=False)
-    # min_k = nx.graph_clique_number(gra)
-    min_k = max(len(clique) for clique in nx.find_cliques(gra))
-    # min_k = len(nx.maximal_independent_set(G))
-    return min_k
+    """
+    Compute the minimum number of clusters (colors) required for the interval
+    graph induced by nodes_df. For an interval graph, this is equal to the
+    size of a maximum clique.
+
+    This function **only** uses the CliSAT maximum clique solver. If CliSAT
+    is not available or fails, a RuntimeError is raised.
+    """
+    intersection_m, edges_list = get_conflict_for_plot(nodes_df)
+    n_v = intersection_m.shape[0]
+    if n_v <= 1:
+        # Trivial graphs do not require CliSAT.
+        return 1
+
+    # CliSAT returns (omega, clique_vertices); we only need omega here.
+    omega, _ = _run_clisat_max_clique(n_v, edges_list)
+    return omega
+
+
+def find_min_clusters_from_intersection(intersection_m):
+    """
+    Compute the clique number / minimum number of colours from a precomputed
+    conflict matrix ``intersection_m``, without rebuilding the interval graph
+    from ``nodes_df``.
+
+    Parameters
+    ----------
+    intersection_m : np.ndarray, shape (V, V)
+        Symmetric {0,1} adjacency matrix with zeros on the diagonal.
+
+    Returns
+    -------
+    int
+        The size of a maximum clique in the interval graph, equal to the
+        chromatic number for interval graphs.
+    """
+    V = intersection_m.shape[0]
+    if V <= 1:
+        # Trivial graphs do not require CliSAT.
+        return 1
+    edges_list = []
+    for v1 in range(V):
+        row = intersection_m[v1]
+        for v2 in range(v1 + 1, V):
+            if row[v2] == 1:
+                edges_list.append((v1, v2))
+    omega, _ = _run_clisat_max_clique(V, edges_list)
+    return omega
 
 
 def get_conflict_for_plot(nodes_df):
