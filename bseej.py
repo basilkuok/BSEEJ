@@ -210,8 +210,8 @@ def _export_trivial_single_transcript(gene: Gene, *, method_label: str, k_reques
 class Main(object):
     """ Initializes the input values """
     n_cluster = 1
-    max_n_iter = 1000
-    eta = 0.01
+    max_n_iter = 10000
+    eta = 0.01     # hyperparameter for bete, |V|-Dirichlet
     alpha = 1
     r = 1
     s = 1
