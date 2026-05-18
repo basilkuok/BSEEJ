@@ -1,0 +1,361 @@
+% Preprocessing and node construction for JARVIS
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{bm}
+\usepackage{hyperref}
+
+\title{Preprocessing Pipeline and Node Representation in JARVIS}
+\author{JARVIS Model}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+The JARVIS model represents a gene as a collection of \emph{nodes} arranged in
+an interval graph. Each node corresponds either to:
+\begin{itemize}
+  \item a single intron excision (junction) between two exons, or
+  \item a multi-junction \emph{path} observed in a long read or read pair.
+\end{itemize}
+
+The core inputs are:
+\begin{itemize}
+  \item a document matrix \(X \in \mathbb{N}^{D \times V}\), where
+  \(X_{d,v}\) counts how many reads in sample \(d\) support node \(v\)
+  (either an intron or a multi-junction path);
+  \item an interval graph on the node set, where edges connect nodes whose
+  underlying genomic segments overlap. This graph constrains each inferred
+  transcript (cluster) to be a set of non-overlapping nodes (i.e.\ an
+  independent set).
+\end{itemize}
+
+We describe how junction information from Megadepth is converted into
+(\(i\)) intron and path nodes, (\(ii\)) the document matrix \(X\), and
+(\(iii\)) an optional co-occurrence matrix over introns.
+
+\section{Data extraction with Megadepth}
+
+For each per-gene BAM file we run Megadepth as
+\begin{align*}
+  \texttt{megadepth\ sample.bam\ } &\texttt{--all-junctions --junctions} \\
+                                   &\texttt{--prefix\ <output\_dir>/sample.bam.}
+\end{align*}
+
+This produces two junction-related outputs:
+\begin{itemize}
+  \item \textbf{\texttt{sample.bam.all\_jxs.tsv}} (\(\texttt{--all-junctions}\)):\\
+  one line per intron per read. Each line encodes a read name, chromosome,
+  intron start and end, strand, CIGAR string, and a uniqueness flag.
+  \item \textbf{\texttt{sample.bam.jxs.tsv}} (\(\texttt{--junctions}\)):\\
+  one line per alignment or read pair that has at least two junctions in
+  total. Each line includes chromosome, leftmost position, strand, insert
+  length, CIGAR string, and a comma-separated list of intron coordinates.
+  For paired-end data, analogous fields for the mate are appended.
+\end{itemize}
+
+The \(\texttt{--all-junctions}\) output is used to build per-intron counts
+and the base document matrix; \(\texttt{--junctions}\) is used to derive
+multi-junction path nodes and an optional intron co-occurrence matrix.
+
+\subsection{Construction of .junc files}
+
+The wrapper script \texttt{extract\_junctions.sh} calls Megadepth and then
+invokes \texttt{junctions/process\_jx\_output.sh}, which converts each
+\texttt{*.all\_jxs.tsv} file into a STAR-style SJ.out-like file
+\texttt{sample.bam.all\_jxs.tsv.sjout}. Each line of that file aggregates
+support for a unique intron:
+\[
+  (\text{chrom}, \text{start}, \text{end}, \text{strand\_code},
+   \text{motif\_code}, \text{annotation\_flag}, \#\text{unique}, \#\text{multi}).
+\]
+
+From this SJ.out-like file we build \texttt{sample.bam.junc} with columns
+\begin{align*}
+  \text{chromStart} &= \text{start}, \\
+  \text{chromEnd}   &= \text{end}, \\
+  \text{score}      &= \#\text{unique} + \#\text{multi}, \\
+  \text{strand}     &= \text{"."}.
+\end{align*}
+The header is
+\[
+  \texttt{chrom\ chromStart\ chromEnd\ .\ score\ strand}
+\]
+and BSEEJ uses only \((\text{chromStart},\text{chromEnd},\text{score})\).
+
+The \(\texttt{Gene}\) class reads all \texttt{*.junc} files, groups by intron
+interval, and constructs a base document matrix \(X\) by summing scores across
+samples for each intron. Coverage filtering (e.g.\ via Portcullis) is handled
+upstream; BSEEJ itself no longer applies an internal \(\texttt{min\_cov}\)
+threshold.
+
+\section{Node representation in \texorpdfstring{\texttt{nodes\_df}}{nodes\_df}}
+
+For a given gene we build a dataframe \(\texttt{nodes\_df}\) with one row per
+node. Columns include:
+\begin{itemize}
+  \item \texttt{start}, \texttt{end}, \texttt{length}: scalar interval for
+  the node;
+  \item \texttt{graph\_labels}, \texttt{node\_labels}: human-readable / index
+  labels;
+  \item optional segment columns \(\texttt{seg\_start\_i}\),
+  \(\texttt{seg\_end\_i}\) when long-read paths are present.
+\end{itemize}
+
+\subsection{Single intron nodes}
+
+Each intron \(v\) corresponds to a genomic interval \([s_v,e_v]\), derived
+from \(\texttt{chromStart}\) and \(\texttt{chromEnd}\) in the .junc files.
+For intron nodes we set:
+\[
+  \texttt{start} = s_v,\quad \texttt{end} = e_v,\quad
+  \texttt{length} = e_v - s_v.
+\]
+
+When multi-junction paths are present we also allocate segment columns
+\(\texttt{seg\_start\_i}\), \(\texttt{seg\_end\_i}\) for
+\(i = 1,\dots,M\), where \(M\) is the maximum number of junctions in any
+path for this gene. For intron nodes we treat them as single-segment nodes:
+\[
+  \texttt{seg\_start\_1} = s_v,\quad \texttt{seg\_end\_1} = e_v,\quad
+  \texttt{seg\_start\_i} = \texttt{seg\_end\_i} = 0 \ \text{for } i \ge 2.
+\]
+Zero-length segments (where \(\texttt{seg\_end\_i} \le \texttt{seg\_start\_i}\))
+are treated as padding and ignored when detecting overlaps.
+
+\subsection{Multi-junction path nodes}
+
+The \(\texttt{--junctions}\) output describes, for each read or read pair, the
+set of introns it spans. For a \texttt{*.jxs.tsv} line we parse the
+comma-separated lists of intron coordinates for the primary alignment
+and (if present) the mate, convert each coordinate token of the form
+\(\texttt{"start-end"}\) into an intron index \(v\) via
+\(\texttt{w2id\_dict}\), and form a set
+\[
+  S = \{v_1,\dots,v_m\} \subseteq \{1,\dots,V_{\text{intron}}\}.
+\]
+We only keep sets with \(m \ge 2\) (true multi-junction reads).
+
+For each distinct set \(S\) observed across all samples we create a path node
+with key \(\texttt{path\_key} = (v_1,\dots,v_m)\) (sorted intron indices).
+Let \(s_{v_i}, e_{v_i}\) be the intron intervals. We define:
+\begin{itemize}
+  \item the outer span:
+  \[
+    s_{\mathrm{path}} = \min_i s_{v_i},\quad
+    e_{\mathrm{path}} = \max_i e_{v_i},
+  \]
+  and set
+  \(\texttt{start} = s_{\mathrm{path}}, \texttt{end} = e_{\mathrm{path}},
+    \texttt{length} = e_{\mathrm{path}} - s_{\mathrm{path}}\);
+  \item the ordered segment list by sorting the intron indices in
+  \(\texttt{path\_key}\) by genomic start:
+  \[
+    (v_{(1)},\dots,v_{(m)}) =
+    \operatorname{argsort}(s_{v_i})
+  \]
+  and then setting
+  \[
+    \texttt{seg\_start\_i} = s_{v_{(i)}},\quad
+    \texttt{seg\_end\_i}   = e_{v_{(i)}}\quad \text{for } i = 1,\dots,m,
+  \]
+  with remaining segments padded to zero:
+  \(\texttt{seg\_start\_i} = \texttt{seg\_end\_i} = 0\) for \(i>m\).
+\end{itemize}
+
+Thus every node (intron or path) is represented as a fixed-length list of
+segments; introns have one non-zero segment, paths have as many segments as
+introns they contain.
+
+\section{Conflict (interval) graph on segments}
+
+The interval graph used by BSEEJ encodes mutual exclusivity between nodes:
+an edge between nodes \(u\) and \(v\) indicates that they cannot appear
+together in a transcript (cluster).
+
+When segment columns are present we treat each node as the union of its
+segments and declare a conflict between nodes \(u\) and \(v\) if any pair
+of segments overlaps:
+\[
+  \exists i,j \ \text{s.t.}\
+    e_{u,i} > s_{v,j} \ \text{and}\ s_{u,i} < e_{v,j},
+\]
+where \([s_{u,i},e_{u,i}]\) and \([s_{v,j},e_{v,j}]\) are non-padding
+segments for nodes \(u\) and \(v\). This covers:
+\begin{itemize}
+  \item intron–intron conflicts (each has one segment),
+  \item intron–path conflicts (one segment vs many),
+  \item path–path conflicts (many vs many).
+\end{itemize}
+
+If no segment columns are present (e.g.\ genes without long-read paths),
+we fall back to the simpler single-interval overlap check using
+\(\texttt{start}\) and \(\texttt{end}\).
+
+Minimum node covers, maximum independent sets, and the required number of
+clusters \(K\) are computed from this segment-wise conflict graph using the
+CliSAT-based maximum clique and independent set routines described below.
+
+\section{CliSAT-based clique number and independent sets}
+
+Let \(G = (V,E)\) be the conflict graph defined above. An \emph{independent
+set} is a subset \(S \subseteq V\) such that no two vertices in \(S\) are
+adjacent in \(G\). A \emph{clique} is a subset \(C \subseteq V\) such that
+every pair of vertices in \(C\) is adjacent. We write \(\omega(G)\) for the
+size of a maximum clique and \(\alpha(G)\) for the size of a maximum
+independent set.
+
+Independent sets in \(G\) correspond to cliques in the complement graph
+\(\bar{G} = (V,\bar{E})\), where \((u,v) \in \bar{E}\) iff \(u \neq v\) and
+\((u,v) \notin E\). In particular,
+\[
+  S \subseteq V \text{ is independent in } G
+  \quad\Leftrightarrow\quad
+  S \text{ induces a clique in } \bar{G}.
+\]
+The JARVIS code uses the CliSAT solver as follows:
+\begin{itemize}
+  \item To compute the clique number \(\omega(G)\), we pass the edge list of
+  \(G\) directly to CliSAT and obtain a maximum clique \(C^\star\). The size
+  \(|C^\star| = \omega(G)\) is used as a structural lower bound
+  \(\texttt{min\_k}\) on the number of clusters needed to colour the graph.
+  \item To compute a maximum independent set (MIS) \(S^\star\), we build the
+  complement graph \(\bar{G}\) from the conflict matrix (i.e.\ an edge is
+  present whenever two nodes do \emph{not} conflict) and call CliSAT on
+  \(\bar{G}\). The returned maximum clique in \(\bar{G}\) is exactly a MIS in
+  \(G\), and JARVIS stores its size \(|S^\star|\) and vertex set.
+\end{itemize}
+Formally, if \(\mathcal{C}(\bar{G})\) denotes the set of cliques in the
+complement graph, then
+\[
+  S^\star \in \operatorname*{arg\,max}_{S \in \mathcal{C}(\bar{G})} |S|
+  \quad\Rightarrow\quad
+  S^\star \text{ is a maximum independent set of } G.
+\]
+
+\subsection{CliSAT-based initialization of independent sets}
+
+The Gibbs, CAVI, and SVI inference procedures initialise each cluster
+with a subset of nodes that is compatible under the interval constraints,
+that is, an independent set of \(G\). We use CliSAT to construct a family of
+such sets without relying on graph libraries such as NetworkX.
+
+Let \(K\) be the number of clusters chosen for a given run. The initial
+independent sets \(\{I_k\}_{k=1}^K\) are constructed in three steps:
+\begin{enumerate}
+  \item \textbf{Global MIS.} Using the complement graph \(\bar{G}\) and
+  CliSAT, we compute a maximum independent set
+  \[
+    S^\star \in \operatorname*{arg\,max}_{S \text{ indep. in } G} |S|.
+  \]
+  This set is used as the first seed:
+  \[
+    I_1 = S^\star.
+  \]
+
+  \item \textbf{Anchored constrained MIS problems.} For each additional
+  cluster \(k = 2,\dots,K\) we form a constrained MIS problem as follows.
+  \begin{enumerate}[(a)]
+    \item Sample a small \emph{anchor set}
+    \(A_k \subseteq S^\star\). Because \(S^\star\) is independent, any subset
+    \(A_k\) is also independent.
+    \item Define the set of candidate vertices
+    \[
+      V_k = \left\{v \in V \setminus A_k :
+        I_{uv} = 0 \ \forall\,u \in A_k \right\},
+    \]
+    where \(I_{uv}\) is the conflict indicator from the interval graph.
+    Thus vertices in \(V_k\) are non-adjacent to all anchors.
+    \item Let \(G_k = G[V_k]\) be the subgraph of \(G\) induced by \(V_k\),
+    and \(\bar{G}_k\) its complement. Running CliSAT on \(\bar{G}_k\) yields
+    a maximum clique \(R_k\), i.e.\ a maximum independent set of \(G_k\).
+    We then define
+    \[
+      I_k = A_k \cup R_k.
+    \]
+  \end{enumerate}
+  By construction, \(I_k\) is an independent set in the original graph \(G\):
+  no two vertices within \(A_k\) conflict (they come from \(S^\star\)), no two
+  vertices within \(R_k\) conflict (MIS in \(G_k\)), and all vertices in
+  \(R_k\) are non-adjacent to every vertex in \(A_k\) by the definition of
+  \(V_k\).
+
+  \item \textbf{Diversity and filling.} Different random choices of anchors
+  \(A_k\) lead to different constrained subgraphs \(G_k\) and therefore to
+  different sets \(R_k\). This yields a collection of initial independent
+  sets \(\{I_k\}\) that share a common high-confidence backbone
+  (\(S^\star\)) but differ in how they extend beyond it. If fewer than \(K\)
+  distinct seeds are obtained, remaining seeds are filled by random subsets
+  of \(S^\star\), which remain independent by construction.
+\end{enumerate}
+
+Each \(I_k\) is used to initialise the binary support vector \(b_k\) in the
+probabilistic model: for nodes \(v \in I_k\), the initial value \(b_{k,v}\)
+is set to one, and zero otherwise. This CliSAT-based procedure ensures that
+all initial supports respect the interval constraints and that the first
+cluster is anchored on a globally optimal independent set of the conflict
+graph.
+
+\section{Document matrix}
+
+Let \(V_{\text{intron}}\) be the number of intron nodes and \(V_{\text{path}}\)
+the number of distinct multi-junction path nodes. The final document matrix
+has shape
+\[
+  X \in \mathbb{N}^{D \times (V_{\text{intron}} + V_{\text{path}})}.
+\]
+For each sample \(d\):
+\begin{itemize}
+  \item columns \(1\ldots V_{\text{intron}}\) record per-intron counts from
+  the \texttt{*.junc} files (Megadepth \(\texttt{--all-junctions}\));
+  \item columns \(V_{\text{intron}}+1\ldots V_{\text{intron}}+V_{\text{path}}\)
+  record counts for each path node, i.e.\ how many reads in sample \(d\)
+  realise that multi-junction pattern (from \texttt{*.jxs.tsv}).
+\end{itemize}
+
+All inference modes (Gibbs, CAVI, SVI) operate on this augmented matrix, so
+the model learns directly from both single-junction and multi-junction
+evidence.
+
+\section{Intron co-occurrence matrix (optional prior)}
+
+Independently of the path-node construction, the \(\texttt{Gene}\) class
+can build an intron co-occurrence matrix from \texttt{*.jxs.tsv} for use as
+an optional prior.
+
+Using only intron indices, we define:
+\begin{itemize}
+  \item \(L_v\): number of multi-junction reads that contain intron \(v\),
+  \item \(C_{v,u}\): number of multi-junction reads that contain both
+  introns \(v\) and \(u\).
+\end{itemize}
+The total intron count
+\(
+  T_v = \sum_{d=1}^D X_{d,v}
+\)
+is derived from the document matrix. For introns with \(L_v > 0\) and
+\(T_v > 0\) we define
+\[
+  p(u \mid v, \text{multi}) = \frac{C_{v,u}}{L_v},\qquad
+  \rho_v = \frac{L_v}{T_v},
+\]
+and the co-occurrence prior matrix
+\[
+  P_{v,u} = \rho_v\,p(u \mid v, \text{multi}) =
+            \rho_v \frac{C_{v,u}}{L_v}.
+\]
+If \(L_v = 0\) or \(T_v = 0\), we set \(P_{v,u}=0\) for all \(u\). This
+matrix is stored as \(\texttt{cooc\_matrix}\) and is intron-by-intron
+(\(V_{\text{intron}} \times V_{\text{intron}}\)); path nodes do not receive
+direct entries.
+
+When the long-read co-occurrence prior is enabled (via a non-zero
+hyperparameter \(\lambda\)), \(P\) is injected into the Dirichlet parameters
+for the intron distributions \(\beta_k\) or their variational counterparts
+\(\zeta_{k,v}\) as an additional pseudo-count term. By default, this prior
+is disabled (\(\lambda = 0\)); the structural path nodes described above
+are the main mechanism for incorporating long-read evidence.
+
+\end{document}
