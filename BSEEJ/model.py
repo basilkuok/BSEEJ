@@ -1209,8 +1209,8 @@ class Model(object):
         self.pi = pi
         self.b = b
         self.converged = False
-    
-    def make_run_info(self, gene, n_k, burn_in, convergence_checkpoint_interval, n_iter):
+
+    def make_run_info_gibbs(self, gene, n_k, burn_in, convergence_checkpoint_interval, n_iter):
         """this function saves all the information in the Gibbs runs"""
         self.run_info = dict()
         self.run_info['N_V'] = gene.n_v
