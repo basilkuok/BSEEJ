@@ -28,6 +28,11 @@ class Model(object):
     def __init__(self, eta, alpha, epsilon, r, s):
         self.eta = eta
         self.alpha = alpha
+        self.eta_prior = eta
+        self.alpha_prior = alpha
+        # Strength of long-read co-occurrence prior (0 disables it)
+        self.cooc_strength = 0.0
+        self.cooc_matrix = None
         self.epsilon = epsilon
         self.r = r
         self.s = s
