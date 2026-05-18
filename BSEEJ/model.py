@@ -31,6 +31,14 @@ class Model(object):
         self.converged = None
         self.z_init = None
         self.run_info = None
+        self.alpha_vec = None
+        self.gamma = None
+        self.phi = None
+        self.zeta = None
+        self.pi_a = None
+        self.pi_b = None
+        self.b_probs = None
+        self.eta0 = None
 
     def initialize_vars(self, gene, n_k):
         """This function initializes model parameters and other variables for training (Gibbs)"""
