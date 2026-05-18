@@ -1343,8 +1343,8 @@ class Model(object):
             self.pi[k] = np.random.beta(self.r + m[k], self.s + self.run_info['N_V'] - m[k], size=None)
             # pi[k] = np.random.beta(r + np.sum(Z_matrix[:, :, k]), s + np.sum(document) -
             # np.sum(Z_matrix[:, :, k]), size=None)
-    
-    def update_b(self):
+
+    def update_b_gibbs(self):
         """Update b variable in the model"""
         n_s = 10
         if not self.converged:
