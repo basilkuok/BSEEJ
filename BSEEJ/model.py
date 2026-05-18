@@ -1444,7 +1444,7 @@ class Model(object):
             likelihood.append(runs_dict[i]['likelihood_i'])
         return likelihood
 
-    def train(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
+    def train_gibbs(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
         """Run Gibbs sampling on the data"""
     
         self.initialize_vars(gene, n_k)
