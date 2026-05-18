@@ -1435,7 +1435,8 @@ class Model(object):
         else:
             self.run_info['gibbs'][t]['Z'] = 0
 
-    def get_log_likelihood_vec(self):
+
+    def get_log_likelihood_vec_gibbs(self):
         """extract the values of likelihood from run info dictionary"""
     
         runs_dict = self.run_info['gibbs']
