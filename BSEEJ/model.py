@@ -1447,8 +1447,16 @@ class Model(object):
     def train_gibbs(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
         """Run Gibbs sampling on the data"""
     
-        self.initialize_vars(gene, n_k)
-        self.make_run_info(gene, n_k, burn_in, convergence_checkpoint_interval, n_iter)
+        # Optional intron co-occurrence prior derived from Megadepth --junctions.
+        # If present on the Gene, this is a (V,V) matrix where cooc[v,u] reflects
+        # how strongly intron v tends to co-occur with intron u in multi-junction reads.
+        if hasattr(gene, "cooc_matrix") and gene.cooc_matrix is not None:
+            self.cooc_matrix = np.asarray(gene.cooc_matrix, dtype=float)
+        else:
+            self.cooc_matrix = None
+
+        self.initialize_vars_gibbs(gene, n_k)
+        self.make_run_info_gibbs(gene, n_k, burn_in, convergence_checkpoint_interval, n_iter)
         self.run_info['gibbs'] = {}
         self.run_info['inference'] = 'gibbs'
 
