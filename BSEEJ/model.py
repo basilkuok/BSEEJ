@@ -21,6 +21,7 @@ class Model(object):
         self.pi = None
         self.z = None
         self.init_nodes = None
+
         self.z = None
         self.beta = None
         self.theta = None
