@@ -7,8 +7,10 @@ import tempfile
 from collections import Counter
 from copy import deepcopy
 
-import arviz as az
-import networkx as nx
+try:
+    import arviz as az
+except Exception:  # optional dependency (often breaks on SciPy/ArviZ mismatch)
+    az = None
 import numba as nb
 import numpy as np
 import pandas as pd
