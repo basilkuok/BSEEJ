@@ -1466,7 +1466,7 @@ class Model(object):
             
             if it >= burn_in and it % convergence_checkpoint_interval == 0 and not self.converged:
     
-                log_likelihood_vector = self.get_log_likelihood_vec()
+                log_likelihood_vector = self.get_log_likelihood_vec_gibbs()
                 self.converged = is_converged_fwsr(log_likelihood_vector, threshold=0.005)
                 
                 if self.converged:
