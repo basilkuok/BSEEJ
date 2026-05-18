@@ -1460,7 +1460,7 @@ class Model(object):
             
             self.update_b()
             
-            self.update_beta()
+            self.update_beta_gibbs()
             
             self.update_run_info(it, gene, burn_in)
             
