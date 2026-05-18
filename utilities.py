@@ -494,29 +494,101 @@ def _maximum_independent_set_from_intersection(intersection_m, candidate_vertice
 
 
 def get_initialization(nodes_df, n_k):
-    _, edges_list = get_conflict_for_plot(nodes_df)
-    gra = generate_interval_graph_nx(nodes_df, edges_list, intervalviz=False)
-    all_max_ind_set = []
-    while len(all_max_ind_set) < n_k:
-        temp = nx.maximal_independent_set(gra)
-        if temp not in all_max_ind_set:
-            all_max_ind_set.append(temp)
-    return all_max_ind_set
+    """
+    Backwards-compatible entry point: delegate to the CliSAT-based
+    ``find_initial_nodes``.
+    """
+    return find_initial_nodes(nodes_df, n_k)
 
 
-def find_initial_nodes(nodes_df, n_k):
-    _, edges_list = get_conflict_for_plot(nodes_df)
-    gra = generate_interval_graph_nx(nodes_df, edges_list, intervalviz=False)
-    all_max_ind_set = []
-    for i in range(1000):
-        temp = nx.maximal_independent_set(gra)
-        if temp not in all_max_ind_set:
-            all_max_ind_set.append(temp)
-    
-    while len(all_max_ind_set) < n_k:
-        temp = nx.maximal_independent_set(gra)
-        all_max_ind_set.append(temp)
-    return all_max_ind_set
+def find_initial_nodes(nodes_df, n_k, max_anchor_size=3, rng_seed=2021):
+    """
+    Backwards-compatible wrapper that first builds the conflict matrix from
+    ``nodes_df`` and then delegates to the intersection-based helper. This
+    is only used when a precomputed conflict matrix is not already available.
+    """
+    intersection_m, _ = get_conflict_for_plot(nodes_df)
+    return find_initial_nodes_from_intersection(
+        intersection_m, n_k, max_anchor_size=max_anchor_size, rng_seed=rng_seed
+    )
+
+
+def find_initial_nodes_from_intersection(intersection_m, n_k, max_anchor_size=3, rng_seed=2021):
+    """
+    Construct ``n_k`` initial independent sets using CliSAT only, given a
+    precomputed conflict matrix ``intersection_m``.
+
+    The first seed is the global maximum independent set (MIS) of the conflict
+    graph. Subsequent seeds are constructed by:
+      1. Choosing a small random anchor subset of the MIS;
+      2. Removing vertices that conflict with any anchor vertex;
+      3. Running CliSAT again (on the complement of the induced subgraph) to
+         obtain a constrained MIS that is compatible with the anchor;
+      4. Taking the union of anchor and constrained MIS as the seed.
+
+    This produces K independent sets that are:
+      - All valid independent sets in the original interval graph;
+      - Optimal for their respective constraints (given the chosen anchors).
+    """
+    n_v = intersection_m.shape[0]
+    rng = np.random.RandomState(rng_seed)
+
+    init_sets = []
+
+    # 1) Global MIS for the first seed.
+    _, mis_global = _maximum_independent_set_from_intersection(intersection_m)
+    mis_global = sorted(set(int(v) for v in mis_global))
+    if not mis_global:
+        # Degenerate fallback: single-node seed.
+        init_sets.append([0] if n_v > 0 else [])
+    else:
+        init_sets.append(mis_global)
+
+    if n_k <= 1:
+        return init_sets[:n_k]
+
+    mis_array = np.array(mis_global, dtype=np.int32)
+    attempts = 0
+    max_attempts = max(10 * n_k, 50)
+
+    # 2) Additional seeds via anchored constrained MIS problems.
+    while len(init_sets) < n_k and attempts < max_attempts and mis_array.size > 0:
+        attempts += 1
+
+        # Choose random anchor subset A_k ⊆ MIS*.
+        anchor_size = rng.randint(1, min(max_anchor_size, mis_array.size) + 1)
+        anchor = rng.choice(mis_array, size=anchor_size, replace=False)
+        anchor = np.unique(anchor)
+
+        # Vertices that can be added on top of anchor must be non-adjacent to
+        # every anchor vertex.
+        allowed = np.ones(n_v, dtype=bool)
+        allowed[anchor] = False
+        for u in anchor:
+            allowed &= (intersection_m[u] == 0)
+        candidates = np.nonzero(allowed)[0]
+        if candidates.size == 0:
+            continue
+
+        _, mis_local = _maximum_independent_set_from_intersection(
+            intersection_m, candidate_vertices=candidates
+        )
+        seed = sorted(set(anchor.tolist()) | set(mis_local))
+        if seed not in init_sets:
+            init_sets.append(seed)
+
+    # 3) If we still have fewer than n_k seeds, fill remaining slots with
+    #    random subsets of the global MIS (ensuring independence) or repeats.
+    while len(init_sets) < n_k:
+        if mis_array.size > 0:
+            anchor_size = rng.randint(1, min(max_anchor_size, mis_array.size) + 1)
+            anchor = rng.choice(mis_array, size=anchor_size, replace=False)
+            seed = sorted(set(int(v) for v in anchor))
+        else:
+            seed = []
+        init_sets.append(seed)
+
+    return init_sets[:n_k]
 
 
 def add_node_is_beta(s, gene_intersection, n_v, bet):
