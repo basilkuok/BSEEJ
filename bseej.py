@@ -218,6 +218,117 @@ class Main(object):
     p = ''
     g = 'A2ML1'
     o = ''
+    mode = 2  # 1 = Gibbs, 2 = CAVI, 3 = SVI
+    # Whether to write the large per-sample result CSV via utilities.save_results.
+    # 0 = disabled (default while debugging), 1 = enabled.
+    save_result = 0
+    # Whether to write diagnostic outputs (ELBO plot, interval graph, phi/zeta exports).
+    # 0 = disabled (default), 1 = enabled.
+    diagnostics = 0
+    # Whether to write preprocessing cache files (.pkl/.sig).
+    # 0 = disabled (default), 1 = enabled.
+    write_preproc_cache = 0
+    # Default minimum junction coverage used when defining nodes.
+    # Junctions with total support < min_cov across all samples are dropped.
+    min_cov = 30
+    idx_suffix = ""
+    variant = "current"
+    annotation_path = ""
+    novel_m = None
+    # Sequencing / preprocessing mode:
+    #   0 = short-read pipeline  (STAR + Megadepth),
+    #   1 = long-read pipeline   (minimap2 + Megadepth).
+    # This flag describes how BAMs and junctions were generated upstream;
+    # JARVIS itself always consumes the same .junc / .jxs.tsv format.
+    long_mode = 1
+
+    @classmethod
+    def interactive_main(cls):
+        """
+        Interactive entry point: show current defaults, allow the user to
+        override flags, confirm, then run with the chosen configuration.
+        """
+        parser = Main.get_parser()
+
+        print("Do you want to specify the configurations?")
+        # Parse empty arg list to show defaults
+        args_default = parser.parse_args([])
+        print("Current default configuration:")
+        print(f"  -k (n_cluster): {args_default.n_cluster}")
+        print(f"  -i (max_n_iter): {args_default.max_n_iter}")
+        print(f"  -e (eta): {args_default.eta}")
+        print(f"  -a (alpha): {args_default.alpha}")
+        print(f"  -r (r): {args_default.r}")
+        print(f"  -s (s): {args_default.s}")
+        print(f"  -p (main_path): {args_default.main_path or './'}")
+        print(f"  -o (result_path): {args_default.result_path or './'}")
+        print(f"  -g (gene_name): {args_default.gene_name}")
+        print(f"  -m (inference mode): {args_default.mode} (1=Gibbs, 2=CAVI, 3=SVI)")
+        print(f"  -min_cov (junction/node filtering inside JARVIS): {args_default.min_cov}")
+        print(f"  -identifier (output suffix): {args_default.idx}")
+        print(f"  -variant: {args_default.variant}")
+        print(f"  -annotation: {args_default.annotation}")
+        print(f"  -novel_m: {args_default.novel_m}")
+        print(f"  -long (sequencing mode): {args_default.long_mode} (0=short-read, 1=long-read)")
+        print(f"  -save_result (write full result CSVs): {args_default.save_result} (0=disabled, 1=enabled)")
+        print("If you want to specify, please type one or more flags.")
+        user_line = input("If you wish to proceed without specification, type [n]: ").strip()
+
+        if user_line and user_line.lower() != "n":
+            try:
+                user_args = shlex.split(user_line)
+            except ValueError:
+                print("Could not parse the flags you entered; proceeding with defaults.")
+                user_args = []
+        else:
+            user_args = []
+
+        # Re-parse with any user overrides
+        args = parser.parse_args(user_args)
+
+        print("Do you wish to proceed with the following configuration:")
+        print(f"  -k (n_cluster): {args.n_cluster}")
+        print(f"  -i (max_n_iter): {args.max_n_iter}")
+        print(f"  -e (eta): {args.eta}")
+        print(f"  -a (alpha): {args.alpha}")
+        print(f"  -r (r): {args.r}")
+        print(f"  -s (s): {args.s}")
+        print(f"  -p (main_path): {args.main_path or './'}")
+        print(f"  -o (result_path): {args.result_path or './'}")
+        print(f"  -g (gene_name): {args.gene_name}")
+        print(f"  -m (inference mode): {args.mode} (1=Gibbs, 2=CAVI, 3=SVI)")
+        print(f"  -min_cov (junction/node filtering inside JARVIS): {args.min_cov}")
+        print(f"  -identifier (output suffix): {args.idx}")
+        print(f"  -variant: {args.variant}")
+        print(f"  -annotation: {args.annotation}")
+        print(f"  -novel_m: {args.novel_m}")
+        print(f"  -long (sequencing mode): {args.long_mode} (0=short-read, 1=long-read)")
+        print(f"  -save_result (write full result CSVs): {args.save_result} (0=disabled, 1=enabled)")
+        confirm = input("[y/n]: ").strip().lower()
+        if confirm != "y":
+            print("Aborting.")
+            return
+
+        # Build a synthetic argv and delegate to the normal main()
+        synthetic_argv = [sys.argv[0]] + user_args
+        print("Proceeding with configuration:")
+        print(f"  -k (n_cluster): {args.n_cluster}")
+        print(f"  -i (max_n_iter): {args.max_n_iter}")
+        print(f"  -e (eta): {args.eta}")
+        print(f"  -a (alpha): {args.alpha}")
+        print(f"  -r (r): {args.r}")
+        print(f"  -s (s): {args.s}")
+        print(f"  -p (main_path): {args.main_path or './'}")
+        print(f"  -o (result_path): {args.result_path or './'}")
+        print(f"  -g (gene_name): {args.gene_name}")
+        print(f"  -m (inference mode): {args.mode} (1=Gibbs, 2=CAVI, 3=SVI)")
+        print(f"  -min_cov (Portcullis filtering): {args.min_cov}")
+        print(f"  -identifier (output suffix): {args.idx}")
+        print(f"  -variant: {args.variant}")
+        print(f"  -annotation: {args.annotation}")
+        print(f"  -novel_m: {args.novel_m}")
+        print(f"  -long (sequencing mode): {args.long_mode} (0=short-read, 1=long-read)")
+        cls.main(synthetic_argv)
     @classmethod
     def main(cls, cmd_args):
         """
