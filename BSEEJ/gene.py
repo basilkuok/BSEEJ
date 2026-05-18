@@ -33,6 +33,14 @@ class Gene(object):
         if not os.path.exists(os.path.join(result_path, self.name)):
             os.mkdir(os.path.join(result_path, self.name))
         self.result_path = os.path.join(result_path, self.name)
+        self.idx_suffix = idx_suffix
+        self.variant = str(variant or "current").strip().lower()
+        self.annotation_path = str(annotation_path or "").strip()
+        self.novel_m = None if novel_m is None else int(novel_m)
+        # BSEEJ no longer applies its own min_coverage threshold; coverage
+        # filtering is handled upstream (e.g., by Portcullis). We keep the
+        # parameter for backward compatibility but ignore it in preprocessing.
+        self.min_coverage = int(min_coverage)
         self.samples_df, self.samples_df_dict = self.get_sample_df()
         self.nodes_df = self.get_junctions()
         self.min_k = find_min_clusters(self.nodes_df)
