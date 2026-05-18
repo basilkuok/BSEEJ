@@ -8,7 +8,17 @@ import pickle
 
 class Gene(object):
     
-    def __init__(self, name, gene_list_dir, result_path):
+    def __init__(
+        self,
+        name,
+        gene_list_dir,
+        result_path,
+        min_coverage=30,
+        idx_suffix="",
+        variant="current",
+        annotation_path="",
+        novel_m=None,
+    ):
         """Initialize gene instance from the zip file containing the gene .bam files:
         This function computes the gene nodes and the interval graph and minimum number of clusters"""
     
