@@ -418,20 +418,7 @@ def get_conflict_for_plot(nodes_df):
                 intersection_m[v2, v1] = 1
                 edges_list.append((v1, v2))
 
-def generate_interval_graph_nx(nodes_df, edges_list, intervalviz=True):
-    """Generate the graph G=(V,E) using networkx library and visualize"""
-    gra = nx.Graph()
-    if intervalviz:
-        newedges_list = [(nodes_df['graph_labels'][ee[0]], nodes_df['graph_labels'][ee[1]]) for ee in edges_list]
-        gra.add_nodes_from(nodes_df['graph_labels'])
-    else:
-        newedges_list = [(nodes_df['node_labels'][ee[0]], nodes_df['node_labels'][ee[1]]) for ee in edges_list]
-        gra.add_nodes_from(nodes_df['node_labels'])
-        # newedgesList = edges_list
-    
-    for e in newedges_list:
-        gra.add_edge(*e)
-    return gra
+    return intersection_m, edges_list
 
 
 def split_training_test(document_orig, tr_percentage=95):
