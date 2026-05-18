@@ -1471,7 +1471,7 @@ class Model(object):
             
             self.update_theta_gibbs()
             
-            self.update_pi()
+            self.update_pi_gibbs()
             
             self.update_b_gibbs()
             
