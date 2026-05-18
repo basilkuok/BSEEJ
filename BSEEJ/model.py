@@ -1259,7 +1259,7 @@ class Model(object):
         self.run_info['convergence_checkpoint_interval'] = convergence_checkpoint_interval
         self.run_info['n_iter'] = n_iter
         self.run_info['convergence_point'] = n_iter
-        self.run_info['document'] = gene.document
+        self.run_info['document'] = gene.document      #####
         self.run_info['document_tr'] = gene.document_tr
         self.run_info['document_te'] = gene.document_te
         self.run_info['tr_idx'] = gene.training_idx
