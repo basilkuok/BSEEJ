@@ -371,8 +371,6 @@ def get_conflict_for_plot(nodes_df):
                 intersection_m[v1, v2] = 1
                 intersection_m[v2, v1] = 1
                 edges_list.append((v1, v2))
-    return intersection_m, edges_list
-
 
 def generate_interval_graph_nx(nodes_df, edges_list, intervalviz=True):
     """Generate the graph G=(V,E) using networkx library and visualize"""
