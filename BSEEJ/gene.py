@@ -150,7 +150,8 @@ class Gene(object):
         samples_df = samples_df.astype({"chromStart": np.int32, "chromEnd": np.int32, "score": np.int32})
     
         if len(samples_df) == 0:
-            return [], []
+            empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+            return empty, {}
         else:
             # Aggregate counts per unique intron across all samples.
             # For whole-sample inputs we must keep chromosome (and strand if present)
