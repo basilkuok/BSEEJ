@@ -624,7 +624,7 @@ def save_results(gene, model):
     new_b, new_z = merge_suplicate_clusters(np.asarray(last_b), np.asarray(last_z))
     model.run_info['new_b'] = deepcopy(new_b)
     model.run_info['new_Z'] = deepcopy(new_z)
-    # save the result
+    # ensure the per-run result directory exists
     if not os.path.exists(gene.result_path):
         os.mkdir(gene.result_path)
     # pickle.dump(model.run_info, open(gene.result_path + '/' + 'run_info_' + comb_name + '.json', 'wb'))
