@@ -21,7 +21,7 @@ class Gene(object):
     ):
         """Initialize gene instance from the zip file containing the gene .bam files:
         This function computes the gene nodes and the interval graph and minimum number of clusters"""
-    
+
         self.name = name
         # self.junc_path = gene_list_dir + name + '/'
         self.junc_path = gene_list_dir
