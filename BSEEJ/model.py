@@ -1452,7 +1452,7 @@ class Model(object):
         
             self.run_info['gibbs'][it] = {}
             
-            self.update_z()
+            self.update_z_gibbs()
             
             self.update_theta()
             
