@@ -1247,6 +1247,11 @@ class Model(object):
         self.run_info['eta'] = self.eta
         self.run_info['epsilon'] = self.epsilon
         self.run_info['min_k'] = gene.min_k
+        self.run_info['variant'] = getattr(gene, 'variant', 'current')
+        self.run_info['reference_k'] = getattr(gene, 'reference_k', None)
+        self.run_info['effective_k'] = getattr(gene, 'effective_k', n_k)
+        self.run_info['annotation_path'] = getattr(gene, 'annotation_path', '')
+        self.run_info['novel_m'] = getattr(gene, 'novel_m', None)
         self.run_info['samples_df'] = gene.samples_df
         self.run_info['gene'] = gene.name
         self.run_info['gene_intersection'] = gene.intersection
