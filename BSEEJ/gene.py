@@ -188,9 +188,13 @@ class Gene(object):
         Irange: (integer): The range, in which the intervals fall into"""
         
         junc_num = self.samples_df.shape[0]
-        nodes_df = pd.DataFrame(data=np.zeros([junc_num, 3]), dtype=np.int32,
-                                columns=['start', 'length', 'end'],
-                                index=range(0, junc_num))
+        # Keep chromosome/strand metadata so whole-sample runs do not conflate
+        # unrelated loci.
+        nodes_df = pd.DataFrame(
+            data=np.zeros([junc_num, 3]),
+            columns=['start', 'length', 'end'],
+            index=range(0, junc_num),
+        )
         
         nodes_df['start'] = self.samples_df.chromStart
         nodes_df['end'] = self.samples_df.chromEnd
