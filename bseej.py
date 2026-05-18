@@ -525,25 +525,125 @@ class Main(object):
         cls.p = args.main_path
         cls.g = args.gene_name
         cls.o = args.result_path
+        cls.mode = int(args.mode)
+        cls.save_result = int(getattr(args, "save_result", 0))
+        cls.diagnostics = int(getattr(args, "diagnostics", 0))
+        cls.write_preproc_cache = int(getattr(args, "write_preproc_cache", 0))
+        cls.min_cov = int(args.min_cov)
+        cls.idx_suffix = str(args.idx)
+        cls.variant = str(getattr(args, "variant", "current") or "current").strip().lower()
+        cls.annotation_path = _resolve_annotation_path(cls.p, str(getattr(args, "annotation", "") or ""))
+        novel_m_raw = getattr(args, "novel_m", None)
+        cls.novel_m = None if novel_m_raw in (None, "") else int(novel_m_raw)
+        if cls.variant not in ("current", "reference", "hybrid"):
+            raise ValueError(f"Unsupported variant '{cls.variant}'. Expected current, reference, or hybrid.")
+        if cls.variant == "hybrid" and cls.novel_m is None:
+            raise ValueError("Variant 'hybrid' requires --novel-m.")
+        if cls.variant in ("reference", "hybrid") and not cls.annotation_path:
+            raise ValueError(
+                f"Variant '{cls.variant}' requires --annotation or a manifest.json beside the prepared gene folders."
+            )
+        # Sequencing / preprocessing mode: 0=short-read (STAR), 1=long-read (minimap2)
+        try:
+            lm = int(args.long_mode)
+        except (TypeError, ValueError):
+            lm = 1
+        if lm not in (0, 1):
+            print("Warning: -long must be 0 (short-read) or 1 (long-read); defaulting to 1.")
+            lm = 1
+        cls.long_mode = lm
     
     @classmethod
     def get_parser(cls):
         parser = argparse.ArgumentParser(description='Implementation of BREM.')
         parser.add_argument("-k", "--n_cluster", help="Number of clusters (integer >= 1, default = 1)",
                             default=1)
-        parser.add_argument("-i", "--max_n_iter", help="Max number of iterations (integer) (default = 1000)",
+        parser.add_argument("-i", "--max_n_iter", help="Max number of iterations (integer) (default = 10000)",
                             default=cls.max_n_iter)
-        parser.add_argument("-e", "--eta", required=False, help="eta (default = 0.01)", default=0.01)
-        parser.add_argument("-a", "--alpha", required=False, help="alpha (default = 1)", default=1)
-        parser.add_argument("-r", "--r", required=False, help="model parameter r (default = 1)", default=1)
-        parser.add_argument("-s", "--s", required=False, help="model parameter s (default = 1)", default=1)
-        parser.add_argument("-p", "--main_path", required=False, help="Main path (default = A2ML1/)", default='A2ML1/')
-        parser.add_argument("-o", "--result_path", required=False, help="result path (default = ./)", default='./results')
+        parser.add_argument("-e", "--eta", required=False, help="eta (default = 0.01)", default=cls.eta)
+        parser.add_argument("-a", "--alpha", required=False, help="alpha (default = 1)", default=cls.alpha)
+        parser.add_argument("-r", "--r", required=False, help="model parameter r (default = 1)", default=cls.r)
+        parser.add_argument("-s", "--s", required=False, help="model parameter s (default = 1)", default=cls.s)
+        parser.add_argument("-p", "--main_path", required=False, help="Main path (default = ./)", default=cls.p)
+        parser.add_argument("-o", "--result_path", required=False, help="result path (default = ./)", default=cls.o)
         parser.add_argument("-g", "--gene_name", required=False, help="gene_name (default = A2ML1)",
-                            default='A2ML1')
+                            default=cls.g)
+        parser.add_argument("-m", "--mode", required=False,
+                            help="Inference mode: 1=Gibbs, 2=CAVI, 3=Stochastic VI (default = 2)",
+                            default=cls.mode)
+        parser.add_argument(
+            "-min_cov",
+            dest="min_cov",
+            required=False,
+            help="Minimum junction coverage for node definition (default = 30; "
+                 "junctions with total support < min_cov across all samples are dropped).",
+            default=cls.min_cov,
+        )
+        parser.add_argument("-identifier", dest="idx", required=False,
+                            help="Identifier suffix to append to output filenames (default = '')",
+                            default=cls.idx_suffix)
+        parser.add_argument(
+            "--variant",
+            dest="variant",
+            required=False,
+            choices=["current", "reference", "hybrid"],
+            help="Structural variant: current, reference, or hybrid.",
+            default=cls.variant,
+        )
+        parser.add_argument(
+            "--annotation",
+            dest="annotation",
+            required=False,
+            help="Reference GTF/GFF for reference or hybrid variants. If omitted, BSEEJ will try manifest.json.",
+            default=cls.annotation_path,
+        )
+        parser.add_argument(
+            "--novel-m",
+            dest="novel_m",
+            required=False,
+            type=int,
+            help="User-specified transcript offset m used only for variant=hybrid.",
+            default=cls.novel_m,
+        )
+        parser.add_argument(
+            "-long", "--long_mode", dest="long_mode", required=False, type=int,
+            help="Sequencing / preprocessing mode: 0=short-read (STAR + Megadepth), "
+                 "1=long-read (minimap2 + Megadepth). Default = 1.",
+            default=cls.long_mode,
+        )
+        parser.add_argument(
+            "-save_result",
+            dest="save_result",
+            required=False,
+            type=int,
+            help="Whether to write full per-sample result CSVs via utilities.save_results "
+                 "(0=disabled, 1=enabled; default=0).",
+            default=cls.save_result,
+        )
+        parser.add_argument(
+            "-diagnostics",
+            dest="diagnostics",
+            required=False,
+            type=int,
+            help="Whether to write diagnostic outputs (ELBO plots, interval graph, phi/zeta exports) "
+                 "(0=disabled, 1=enabled; default=0).",
+            default=cls.diagnostics,
+        )
+        parser.add_argument(
+            "-write_preproc_cache",
+            dest="write_preproc_cache",
+            required=False,
+            type=int,
+            help="Whether to write preprocessing cache files (.pkl/.sig) "
+                 "(0=disabled, 1=enabled; default=0).",
+            default=cls.write_preproc_cache,
+        )
         return parser
 
 
 
 if __name__ == '__main__':
-    Main.main(sys.argv)
+    if len(sys.argv) == 1:
+        Main.interactive_main()
+    else:
+        Main.main(sys.argv)
