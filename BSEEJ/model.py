@@ -1,6 +1,7 @@
 import time
 
-from scipy.special import gammaln, xlogy
+from scipy.special import gammaln, xlogy, psi
+from scipy.special import expit
 from scipy.stats import beta as sci_beta
 from scipy.stats import dirichlet, multinomial
 
