@@ -343,7 +343,7 @@ class Main(object):
         print('junction path:', cls.p)
     
         print('result path:', cls.o)
-    
+
         print('Number of clusters:', cls.n_cluster)
         print('Maximum number of iterations:', cls.max_n_iter)
     
