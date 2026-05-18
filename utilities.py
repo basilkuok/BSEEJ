@@ -2,6 +2,8 @@ import gzip
 import os
 import pickle
 import random
+import subprocess
+import tempfile
 from collections import Counter
 from copy import deepcopy
 
