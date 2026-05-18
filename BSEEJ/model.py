@@ -1392,7 +1392,7 @@ class Model(object):
         # Z_matrix[:, v, k] counts the number of times word v is assigned to cluster k throughout the whole corpus
         for k in range(self.run_info['N_K']):
             temp_b = np.array([v + self.epsilon if v == 0 else v for v in list(self.b[k, :])])
-            self.beta[k, :] = np.random.dirichlet(temp_b * self.eta + np.sum(self.z[:, :, k], axis=0))
+            prior_vec = temp_b * self.eta
 
             # Optional long-read co-occurrence prior: bias the Dirichlet
             # concentration for β_k so that introns that co-occur with the
