@@ -510,13 +510,6 @@ class Main(object):
         else:
             raise ValueError(f"Unsupported inference mode '{cls.mode}'. Expected 1, 2, or 3.")
         
-        # Train the gene
-        model.train(gene, cls.n_cluster, n_iter=cls.max_n_iter, burn_in=burn_in,
-                    convergence_checkpoint_interval=convergence_checkpoint_interval, verbose=True)
-        
-        # Save all the results, including all the parameters in the model in a pickle file and clusters
-        _ = save_results(gene, model)
-    
     @classmethod
     def init(cls, cmd_args):
         """ Check the parser for possible inputs and overrides the existing default values if any. """
