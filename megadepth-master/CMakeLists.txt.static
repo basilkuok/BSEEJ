@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 2.6)
+set( CMAKE_VERBOSE_MAKEFILE on )
+project(megadepth_static)
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -DMEGADEPTH_VERSION=\"\\\"`cat ../VERSION`\\\"\"")
+add_executable(megadepth_static megadepth.cpp)
+include_directories(libdeflate htslib_static libBigWig_static /hbb_shlib/include)
+
+#to work with HBB to statically link libcurl & friends
+set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
+target_link_libraries(megadepth_static -static ${CMAKE_SOURCE_DIR}/htslib_static/libhts.a ${CMAKE_SOURCE_DIR}/libBigWig_static/libBigWig.a /hbb_shlib/lib/libz.a -lpthread ${CMAKE_SOURCE_DIR}/libdeflate/libdeflate.a)
+#target_link_libraries(megadepth_static -static ${CMAKE_SOURCE_DIR}/htslib/libhts.a ${CMAKE_SOURCE_DIR}/libBigWig/libBigWig.a ${CMAKE_SOURCE_DIR}/zlib/libz.a -lpthread ${CMAKE_SOURCE_DIR}/libdeflate/libdeflate.a)
