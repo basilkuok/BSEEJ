@@ -1495,4 +1495,106 @@ class Model(object):
         self.run_info['duration'] = round(time.time() - startiter, 3)
         self.run_info['duration_per_iter'] = round(self.run_info['duration'] / n_iter, 3)
         self.run_info['error'] = np.sum(np.abs(self.z - self.z_init)) / (self.run_info['N_D'] * self.run_info['N_W'])
-        self.run_info['likelihood_te'] = self.log_likelihood_te(gene.document_te)
+        self.run_info['likelihood_te'] = self.log_likelihood_te_gibbs(gene.document_te)
+
+        # Export Gibbs diagnostics and results in a format consistent with CAVI/SVI.
+        self._finalize_gibbs(gene)
+
+
+    def _finalize_gibbs(self, gene):
+        """
+        Export Gibbs sampling diagnostics: phi/zeta-style snapshots and likelihood trace.
+        The core result files (run_info and bseej_*.csv) are still written via utilities.save_results.
+        """
+        # Ensure we have a document matrix on run_info
+        doc = self.run_info.get('document', None)
+        if doc is None and hasattr(gene, "document"):
+            doc = gene.document
+            self.run_info['document'] = doc
+        if doc is None:
+            return
+
+        D, V = doc.shape
+        K = int(self.run_info.get('N_K', 0))
+        if K <= 0:
+            return
+
+        method_label = 'gibbs'
+        self.run_info['inference'] = method_label
+
+        # Per-run output directory: <gene>/<gene>_gibbs_<K>[_suffix]
+        orig_result_path = gene.result_path
+        idx_suffix = getattr(gene, 'idx_suffix', '') or getattr(self, 'idx_suffix', '') or self.run_info.get('idx_suffix', '')
+        suffix = f"_{idx_suffix}" if idx_suffix else ""
+        run_dirname = f"{gene.name}_{method_label}_{K}{suffix}"
+        run_result_path = os.path.join(orig_result_path, run_dirname)
+        os.makedirs(run_result_path, exist_ok=True)
+        gene.result_path = run_result_path
+        self.run_info['result_path'] = run_result_path
+
+        # Debug: write the interval graph and copy raw Megadepth junction
+        # outputs into the run-specific output directory.
+        if hasattr(gene, "_debug_print_interval_graph"):
+            try:
+                gene._debug_print_interval_graph()
+            except Exception:
+                pass
+        if hasattr(gene, "_export_raw_junction_files"):
+            try:
+                gene._export_raw_junction_files()
+            except Exception:
+                pass
+
+        # Build a φ-like responsibility tensor from the final Gibbs counts z.
+        if self.z is None:
+            return
+        z_counts = np.asarray(self.z, dtype=float)
+        try:
+            z_counts = z_counts.reshape(D, V, K)
+        except Exception:
+            return
+
+        phi = np.zeros_like(z_counts, dtype=float)
+        for d in range(D):
+            for v in range(V):
+                cnt = float(doc[d, v])
+                if cnt > 0.0:
+                    phi[d, v, :] = z_counts[d, v, :] / cnt
+                else:
+                    phi[d, v, :] = 1.0 / K
+
+        # Treat the sampled β as a ζ-like snapshot for export purposes.
+        if self.beta is None:
+            return
+        zeta = np.asarray(self.beta, dtype=float)
+        try:
+            zeta = zeta.reshape(K, V)
+        except Exception:
+            pass
+
+        # Export φ/ζ CSV + Excel for Gibbs.
+        try:
+            self._export_phi_zeta_and_excel(gene, K, method_label, phi, zeta)
+        except Exception:
+            pass
+
+        # Plot the Gibbs log-likelihood trace, if available.
+        try:
+            history = self.get_log_likelihood_vec_gibbs()
+        except Exception:
+            history = []
+        if history:
+            items = sorted(self.run_info.get('gibbs', {}).items())
+            iterations = [it for it, _ in items]
+            self._save_elbo_plot(gene, history, method_label=method_label, k=K, iterations=iterations)
+
+        # Core Gibbs outputs: run_info + main CSV, via existing utilities logic.
+        try:
+            from utilities import save_results
+            if getattr(self, "save_results", True):
+                save_results(gene, self)
+        except Exception:
+            pass
+
+        # Restore the gene-level result_path after writing all run-specific outputs.
+        gene.result_path = orig_result_path
