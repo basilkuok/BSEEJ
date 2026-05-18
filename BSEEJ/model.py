@@ -25,7 +25,7 @@ _eps = 1e-12
 
 class Model(object):
     
-    def __init__(self, eta, alpha, epsilon, r, s):
+    def __init__(self, eta, alpha, epsilon, r, s, idx_suffix=""):
         self.eta = eta
         self.alpha = alpha
         self.eta_prior = eta
