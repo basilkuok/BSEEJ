@@ -603,6 +603,11 @@ def merge_suplicate_clusters(b, z):
 
 def save_results(gene, model):
     print('Saving the results for gene', gene.name)
+    method_label = str(model.run_info.get('inference', 'unknown'))
+    idx_suffix = getattr(gene, 'idx_suffix', '') or getattr(model, 'idx_suffix', '') or model.run_info.get('idx_suffix', '')
+    suffix = f"_{idx_suffix}" if idx_suffix else ""
+    # the comb_name is replaced for VI because filename is too long
+    comb_suffix = f"_K_{model.run_info['N_K']}" + suffix
     comb_name = 'gene_' + gene.name + '_alpha_' + str(model.alpha) + '_eta_' + str(model.eta) + '_epsilon_' + \
                 str(model.epsilon) + '_rs_' + str(model.r) + '_K_' + str(model.run_info['N_K'])
     last_run = list(model.run_info['gibbs'])[-1]
