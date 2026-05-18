@@ -431,18 +431,66 @@ def split_training_test(document_orig, tr_percentage=95):
 
 
 def find_mis(nodes_df):
-    _, edges_list = get_conflict_for_plot(nodes_df)
-    gra = generate_interval_graph_nx(nodes_df, edges_list, intervalviz=False)
-    gc = nx.complement(gra)
-    # This is for older versions of networkx
-    # mis = nx.graph_clique_number(gc)
-    mis = max(len(clique) for clique in nx.find_cliques(gc))
-    max_ind_set = nx.maximal_independent_set(gra)
-    while len(max_ind_set) < mis:
-        max_ind_set = nx.maximal_independent_set(gra)
-    max_ind_set = [int(n) for n in max_ind_set]
-    max_ind_set.sort()
-    return mis, max_ind_set
+    """
+    Compute the size of a maximum independent set (MIS) and one such set.
+
+    This function **only** uses CliSAT on the complement graph (where cliques
+    correspond to independent sets in the original graph). If CliSAT is not
+    available or fails, a RuntimeError is raised.
+    """
+    intersection_m, _ = get_conflict_for_plot(nodes_df)
+    mis_size, max_ind_set = _maximum_independent_set_from_intersection(intersection_m)
+    if not max_ind_set:
+        raise RuntimeError(
+            "CliSAT did not provide a maximum independent set for the conflict graph."
+        )
+    return mis_size, sorted(max_ind_set)
+
+
+def _maximum_independent_set_from_intersection(intersection_m, candidate_vertices=None):
+    """
+    Helper: compute a maximum independent set of the conflict graph whose
+    adjacency is given by ``intersection_m``.
+
+    Parameters
+    ----------
+    intersection_m : np.ndarray, shape (V, V)
+        Symmetric {0,1} adjacency matrix with zeros on the diagonal.
+    candidate_vertices : optional iterable of int
+        If provided, restrict the MIS search to the subgraph induced by this
+        vertex subset.
+
+    Returns
+    -------
+    (int, list[int])
+        Size of the maximum independent set and a list of vertex indices in
+        the original graph.
+    """
+    n_v = intersection_m.shape[0]
+    if candidate_vertices is None:
+        verts = np.arange(n_v, dtype=np.int32)
+    else:
+        verts = np.array(list(candidate_vertices), dtype=np.int32)
+
+    n_sub = verts.shape[0]
+    if n_sub == 0:
+        return 0, []
+
+    # Build complement edges for the induced subgraph on verts.
+    comp_edges = []
+    for i in range(n_sub):
+        gi = verts[i]
+        row = intersection_m[gi]
+        for j in range(i + 1, n_sub):
+            gj = verts[j]
+            if row[gj] == 0:
+                comp_edges.append((i, j))
+
+    mis_size, clique_vertices_local = _run_clisat_max_clique(n_sub, comp_edges)
+    if not clique_vertices_local:
+        return mis_size, []
+    mis_global = [int(verts[int(lv)]) for lv in clique_vertices_local]
+    return mis_size, mis_global
 
 
 def get_initialization(nodes_df, n_k):
