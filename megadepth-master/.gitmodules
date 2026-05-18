@@ -1,0 +1,12 @@
+[submodule "htslib"]
+	path = htslib_ci
+	url = https://github.com/samtools/htslib
+[submodule "libBigWig"]
+	path = libBigWig_ci
+	url = https://github.com/dpryan79/libBigWig
+[submodule "libdeflate"]
+	path = libdeflate_ci
+	url = https://github.com/ebiggers/libdeflate
+[submodule "zlib"]
+	path = zlib_ci
+	url = https://github.com/madler/zlib
