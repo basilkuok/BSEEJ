@@ -653,10 +653,429 @@ def save_results(gene, model):
 
     compute_df_vectorized(n_sample, effective_k, n_introns, result_df, gene_name, z_matrix, starts, ends)
     
-    file_name_2 = 'bseej_' + gene_name + '_K_' + str(effective_k) + '.csv'
+    csv_suffix = f"_K_{effective_k}" + suffix
+    file_name_2 = f"bseej_{gene_name}_{method_label}{csv_suffix}.csv"
     result_df.to_csv(gene.result_path + '/' + file_name_2)
     print(gene.result_path + '/' + file_name_2, 'saved.')
+
+    # NOTE: GTF/count export is triggered post-inference in Model._finalize_after_inference
+    # so -save_result only controls this CSV.
     return gene.result_path + '/' + file_name_2
+
+
+def _export_bseej_transcripts_gtf_and_counts(gene, model):
+    """
+    Export a per-gene GTF where each BSEEJ cluster is represented as a transcript
+    composed from the cluster's introns.
+
+    Notes / rigor:
+    - BSEEJ operates on introns; transcript start/end are not identifiable from
+      introns alone. To avoid using reference annotations (leakage), we construct
+      minimal terminal exons of length 1 bp adjacent to the first/last intron.
+    - Internal exons are inferred deterministically from splice sites:
+        exon_start = prev_intron_end + 1
+        exon_end   = next_intron_start - 1
+      using 1-based inclusive coordinates (STAR SJ.out convention).
+    - Nodes that represent multi-junction paths (seg_start_*/seg_end_*) are
+      currently excluded from this export to keep the mapping unambiguous.
+    """
+    import os
+    import sys
+    import numpy as np
+
+    out_dir = getattr(gene, "result_path", None) or "."
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Prefer final state; fall back to legacy 'new_b' when present.
+    b = model.run_info.get("final_b_mask", None)
+    if b is None:
+        b = model.run_info.get("new_b", None)
+    b = np.asarray(b) if b is not None else None
+    if b is None or b.ndim != 2:
+        raise ValueError("Expected model.run_info['final_b_mask'] (or legacy 'new_b') to be a (K,V) matrix")
+    K, V = int(b.shape[0]), int(b.shape[1])
+
+    # Prefer final variational state (CAVI/SVI).
+    doc = np.asarray(getattr(gene, "document", None)) if getattr(gene, "document", None) is not None else None
+    phi = model.run_info.get("final_phi", None)
+    phi = np.asarray(phi) if phi is not None else None
+    if doc is None or doc.ndim != 2:
+        raise ValueError("Gene.document missing/invalid for export")
+    if phi is None or phi.ndim != 3:
+        raise ValueError("model.run_info['final_phi'] missing/invalid for export")
+    D = int(doc.shape[0])
+
+    # Beta ("topics over nodes") is represented by zeta; we use its mean to rank nodes.
+    zeta = model.run_info.get("final_zeta", None)
+    if zeta is None:
+        # Try last snapshot (CAVI/SVI history stores 'zeta')
+        try:
+            last_run = list(model.run_info.get("gibbs", {}))[-1]
+            zeta = model.run_info["gibbs"][last_run].get("zeta")
+        except Exception:
+            zeta = None
+    if zeta is not None:
+        zeta = np.asarray(zeta, dtype=float)
+        # If b was merged elsewhere, zeta may still be unmerged. Keep strictness
+        # for now: mismatched shapes likely indicate an inconsistent export state.
+        if zeta.shape != (K, V):
+            raise ValueError(f"Expected zeta to have shape (K,V)=({K},{V}); got {zeta.shape}")
+        zeta_sum = np.sum(zeta, axis=1, keepdims=True)
+        zeta_sum = np.where(zeta_sum > 0, zeta_sum, 1.0)
+        beta_mean = zeta / zeta_sum  # E[beta_{k,v}] up to normalization
+    else:
+        beta_mean = None
+
+    nodes_df = getattr(gene, "nodes_df", None)
+    if nodes_df is None or nodes_df.shape[0] != V:
+        raise ValueError("Gene.nodes_df missing or not aligned with V")
+    if "start" not in nodes_df.columns or "end" not in nodes_df.columns:
+        raise ValueError("Gene.nodes_df must contain 'start' and 'end'")
+
+    # Detect whether multi-junction path nodes exist (seg_start_i/seg_end_i).
+    # In this codebase, single-intron nodes are encoded as segment 1 with
+    # seg_start_1/start and seg_end_1/end, while path nodes have multiple
+    # non-zero segments.
+    seg_start_cols = sorted([c for c in nodes_df.columns if str(c).startswith("seg_start_")])
+    seg_end_cols = sorted([c for c in nodes_df.columns if str(c).startswith("seg_end_")])
+    max_segments = 0
+    if seg_start_cols and seg_end_cols:
+        try:
+            max_segments = max(
+                int(str(c).split("_")[-1])
+                for c in seg_start_cols
+                if str(c).split("_")[-1].isdigit()
+            )
+        except Exception:
+            max_segments = 0
+
+    def _node_introns(v_idx: int):
+        """
+        Return a list of intron intervals for node v.
+        For path nodes, returns multiple (start,end) segments.
+        For intron nodes, returns the single (start,end).
+        """
+        if max_segments <= 0:
+            return [(int(starts[v_idx]), int(ends[v_idx]))]
+        out = []
+        for seg_i in range(1, max_segments + 1):
+            s_col = f"seg_start_{seg_i}"
+            e_col = f"seg_end_{seg_i}"
+            if s_col not in nodes_df.columns or e_col not in nodes_df.columns:
+                continue
+            try:
+                s = int(nodes_df.loc[v_idx, s_col])
+                e = int(nodes_df.loc[v_idx, e_col])
+            except Exception:
+                continue
+            if e > s and s > 0:
+                out.append((s, e))
+        if not out:
+            out = [(int(starts[v_idx]), int(ends[v_idx]))]
+        return out
+
+    def _is_path_node(v_idx: int) -> bool:
+        if max_segments <= 1:
+            return False
+        segs = _node_introns(v_idx)
+        return len(segs) >= 2
+
+    starts = nodes_df["start"].to_numpy().astype(int)
+    ends = nodes_df["end"].to_numpy().astype(int)
+
+    if "chrom" in nodes_df.columns:
+        chroms = nodes_df["chrom"].astype(str).to_numpy()
+    else:
+        chroms = np.array(["."] * V, dtype=object)
+
+    if "strand" in nodes_df.columns:
+        strands = nodes_df["strand"].astype(str).to_numpy()
+    else:
+        strands = np.array(["."] * V, dtype=object)
+
+    # Sample names (for the count matrix header).
+    sample_files = getattr(gene, "sample_files", None) or []
+    sample_names = []
+    for path in sample_files:
+        base = os.path.basename(str(path))
+        for suf in (".junc.gz", ".junc"):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+                break
+        sample_names.append(base)
+    if len(sample_names) != D:
+        # Fallback: numeric IDs if we cannot reconcile.
+        sample_names = [f"sample_{i}" for i in range(D)]
+
+    gtf_b_path = os.path.join(out_dir, f"{gene.name}_bseej_predicted_b.gtf")
+    gtf_beta_path = os.path.join(out_dir, f"{gene.name}_bseej_predicted_beta.gtf")
+    counts_b_path = os.path.join(out_dir, f"{gene.name}_bseej_counts_b.tsv")
+    counts_beta_path = os.path.join(out_dir, f"{gene.name}_bseej_counts_beta.tsv")
+
+    def _emit_gtf_line(fh, chrom, source, feature, start, end, strand, attrs):
+        fh.write(
+            "\t".join(
+                [
+                    str(chrom),
+                    str(source),
+                    str(feature),
+                    str(int(start)),
+                    str(int(end)),
+                    ".",
+                    str(strand) if strand in ("+", "-") else ".",
+                    ".",
+                    attrs,
+                ]
+            )
+            + "\n"
+        )
+
+    # Build transcripts and a transcript-by-sample count matrix for two decodings:
+    #   (A) b-based (structural mask): members = {v : b[k,v] == 1}
+    #   (B) beta-based (soft): members selected from E[beta_{k,v}] without any
+    #       post-inference constraint projection. By default we select the smallest
+    #       top-mass set reaching BSEEJ_EXPORT_BETA_MASS cumulative mass; an optional
+    #       top-fraction-by-rank mode is available via BSEEJ_EXPORT_BETA_TOP_FRACTION.
+    #
+    # Important: we do NOT apply any additional MWIS/constraint projection at export time.
+    # If a chosen set cannot be represented as a valid transcript (overlapping introns,
+    # invalid exon inference), we skip emitting that transcript rather than modifying it.
+    beta_top_fraction = None
+    try:
+        beta_top_fraction_raw = os.environ.get("BSEEJ_EXPORT_BETA_TOP_FRACTION", "").strip()
+        if beta_top_fraction_raw != "":
+            beta_top_fraction = float(beta_top_fraction_raw)
+    except Exception:
+        beta_top_fraction = None
+    if beta_top_fraction is not None:
+        beta_top_fraction = min(max(beta_top_fraction, 0.0), 1.0)
+
+    beta_mass = 0.80
+    try:
+        beta_mass = float(os.environ.get("BSEEJ_EXPORT_BETA_MASS", "0.80"))
+    except Exception:
+        beta_mass = 0.80
+    beta_mass = min(max(beta_mass, 0.0), 1.0)
+
+    # Persist the minimal decoding state needed to (re)construct predicted_b/predicted_beta
+    # transcripts later without re-running inference.
+    try:
+        try:
+            flank_len = int(os.environ.get("BSEEJ_EXPORT_FLANK_EXON_LEN", "1"))
+        except Exception:
+            flank_len = 1
+        flank_len = max(1, int(flank_len))
+
+        state_path = os.path.join(out_dir, f"{gene.name}_bseej_decoding_state_K_{K}.npz")
+        state = {
+            "b_mask": b.astype(np.int8, copy=False),
+            "K": np.int32(K),
+            "V": np.int32(V),
+            # Record export-time parameters for reproducibility.
+            "export_beta_mass": np.float32(beta_mass),
+            "export_beta_top_fraction": (
+                np.float32(beta_top_fraction) if beta_top_fraction is not None else np.float32(-1.0)
+            ),
+            "export_flank_exon_len": np.int32(flank_len),
+        }
+        if zeta is not None:
+            state["zeta"] = np.asarray(zeta, dtype=np.float32)
+        if beta_mean is not None:
+            state["beta_mean"] = np.asarray(beta_mean, dtype=np.float32)
+        np.savez_compressed(state_path, **state)
+    except Exception as exc:
+        print(f"[WARN] Failed to write decoding state for {gene.name}: {exc}", file=sys.stderr)
+
+    def _select_members_beta(k_idx: int) -> np.ndarray | None:
+        if beta_mean is None:
+            return None
+        probs_all = beta_mean[k_idx, :].astype(float)
+        order = np.argsort(-probs_all)
+        if beta_top_fraction is not None:
+            n_keep = int(np.ceil(float(V) * float(beta_top_fraction)))
+            n_keep = max(1, min(V, n_keep))
+            return order[:n_keep].astype(int)
+
+        probs_sorted = probs_all[order]
+        total = float(np.sum(probs_sorted))
+        if total <= 0.0:
+            # Degenerate case: still emit the single top-ranked node.
+            return np.array([int(order[0])], dtype=int)
+        cum = 0.0
+        chosen = []
+        for v_idx, p in zip(order.tolist(), probs_sorted.tolist()):
+            if p <= 0.0:
+                break
+            chosen.append(int(v_idx))
+            cum += float(p)
+            if cum / total >= beta_mass:
+                break
+        if not chosen:
+            chosen = [int(order[0])]
+        return np.array(chosen, dtype=int)
+
+    def _counts_for_members(k_idx: int, members: np.ndarray, members_intron: np.ndarray):
+        intron_counts = (
+            (doc[:, members_intron] * phi[:, members_intron, k_idx]).sum(axis=1).tolist()
+            if members_intron.size > 0
+            else [0.0] * D
+        )
+        aug_counts = (doc[:, members] * phi[:, members, k_idx]).sum(axis=1).tolist()
+        return intron_counts, aug_counts
+
+    def _emit_one_transcript(
+        gtf_fh,
+        *,
+        k_idx: int,
+        members: np.ndarray,
+        transcript_suffix: str,
+        transcript_ids_out: list,
+        counts_intron_out: list,
+        counts_aug_out: list,
+    ):
+        if members.size == 0:
+            return
+
+        # Require a single chromosome.
+        chrom_set = {str(chroms[i]) for i in members if str(chroms[i]) and str(chroms[i]) != "nan"}
+        if len(chrom_set) == 0:
+            chrom = "."
+        elif len(chrom_set) == 1:
+            chrom = next(iter(chrom_set))
+        else:
+            return
+
+        strand_set = {strands[i] for i in members if strands[i] in ("+", "-")}
+        strand = next(iter(strand_set)) if len(strand_set) == 1 else "."
+
+        # Build intron set from selected nodes (including path segments).
+        intron_set = set()
+        for v_idx in members.tolist():
+            for s, e in _node_introns(int(v_idx)):
+                intron_set.add((int(s), int(e)))
+        introns = sorted(list(intron_set), key=lambda x: (x[0], x[1]))
+        if not introns:
+            return
+
+        # Validate non-overlap. If violated, skip rather than modifying the selection.
+        ok = True
+        for (s, e) in introns:
+            if e < s:
+                ok = False
+                break
+        if ok:
+            for (s1, e1), (s2, e2) in zip(introns, introns[1:]):
+                if e1 >= s2:
+                    ok = False
+                    break
+        if not ok:
+            print(
+                f"[WARN] Skipping export for {gene.name} cluster {k_idx}{transcript_suffix}: overlapping/invalid introns",
+                file=sys.stderr,
+            )
+            return
+
+        # Infer exons from intron boundaries (1-based inclusive).
+        exons = []
+        first_s, _first_e = introns[0]
+        _last_s, last_e = introns[-1]
+        # We don't know true transcript boundaries from junctions alone, but we
+        # need flanking exons so the first/last introns are representable in GTF.
+        # Use short flanks of configurable length (default: 1bp) to anchor the
+        # intron chain in a valid GTF exon representation.
+        try:
+            flank_len = int(os.environ.get("BSEEJ_EXPORT_FLANK_EXON_LEN", "1"))
+        except Exception:
+            flank_len = 1
+        flank_len = max(1, flank_len)
+
+        exon1_end = int(first_s - 1)
+        if exon1_end < flank_len:
+            print(
+                f"[WARN] Skipping export for {gene.name} cluster {k_idx}{transcript_suffix}: cannot place {flank_len}bp 5' flank exon",
+                file=sys.stderr,
+            )
+            return
+        exons.append((int(exon1_end - flank_len + 1), int(exon1_end)))
+        for (prev_s, prev_e), (next_s, next_e) in zip(introns, introns[1:]):
+            ex_s = int(prev_e + 1)
+            ex_e = int(next_s - 1)
+            if ex_e < ex_s:
+                print(
+                    f"[WARN] Skipping export for {gene.name} cluster {k_idx}{transcript_suffix}: invalid exon inference",
+                    file=sys.stderr,
+                )
+                return
+            exons.append((ex_s, ex_e))
+        exonN_start = int(last_e + 1)
+        exons.append((exonN_start, int(exonN_start + flank_len - 1)))
+
+        tid = f"BSEEJ_{gene.name}_C{k_idx}{transcript_suffix}"
+        gid = str(gene.name)
+        attrs_tx = f'gene_id "{gid}"; transcript_id "{tid}";'
+        tx_start = min(s for s, _e in exons)
+        tx_end = max(e for _s, e in exons)
+        _emit_gtf_line(gtf_fh, chrom, "BSEEJ", "transcript", tx_start, tx_end, strand, attrs_tx)
+        for exon_idx, (ex_s, ex_e) in enumerate(exons, start=1):
+            attrs_ex = attrs_tx + f' exon_number "{exon_idx}";'
+            _emit_gtf_line(gtf_fh, chrom, "BSEEJ", "exon", ex_s, ex_e, strand, attrs_ex)
+
+        members_intron = np.array([i for i in members.tolist() if not _is_path_node(int(i))], dtype=int)
+        intron_counts, aug_counts = _counts_for_members(k_idx, members, members_intron)
+        transcript_ids_out.append(tid)
+        counts_intron_out.append(intron_counts)
+        counts_aug_out.append(aug_counts)
+
+    # Collect results for both decodings.
+    transcript_ids_b = []
+    counts_intron_b = []
+    counts_aug_b = []
+    transcript_ids_beta = []
+    counts_intron_beta = []
+    counts_aug_beta = []
+
+    with open(gtf_b_path, "w", encoding="utf-8") as gtf_fh_b, open(gtf_beta_path, "w", encoding="utf-8") as gtf_fh_beta:
+        for k_idx in range(K):
+            members_b = np.where(b[k_idx] > 0)[0]
+            if members_b.size > 0:
+                _emit_one_transcript(
+                    gtf_fh_b,
+                    k_idx=k_idx,
+                    members=members_b,
+                    transcript_suffix="_b",
+                    transcript_ids_out=transcript_ids_b,
+                    counts_intron_out=counts_intron_b,
+                    counts_aug_out=counts_aug_b,
+                )
+
+            members_beta = _select_members_beta(k_idx)
+            if members_beta is not None and members_beta.size > 0:
+                _emit_one_transcript(
+                    gtf_fh_beta,
+                    k_idx=k_idx,
+                    members=members_beta,
+                    transcript_suffix="_beta",
+                    transcript_ids_out=transcript_ids_beta,
+                    counts_intron_out=counts_intron_beta,
+                    counts_aug_out=counts_aug_beta,
+                )
+
+    # Write count matrix.
+    def _write_counts(path, tids, rows):
+        with open(path, "w", encoding="utf-8") as out_fh:
+            out_fh.write("transcript_id\t" + "\t".join(sample_names) + "\n")
+            for tid, row in zip(tids, rows):
+                out_fh.write(tid + "\t" + "\t".join(map(str, row)) + "\n")
+
+    _write_counts(counts_b_path, transcript_ids_b, counts_intron_b)
+    _write_counts(os.path.join(out_dir, f"{gene.name}_bseej_counts_b_augmented.tsv"), transcript_ids_b, counts_aug_b)
+    _write_counts(counts_beta_path, transcript_ids_beta, counts_intron_beta)
+    _write_counts(os.path.join(out_dir, f"{gene.name}_bseej_counts_beta_augmented.tsv"), transcript_ids_beta, counts_aug_beta)
+
+    print(f"[INFO] Exported BSEEJ transcript GTF (b): {gtf_b_path}")
+    print(f"[INFO] Exported BSEEJ transcript GTF (beta): {gtf_beta_path}")
+    print(f"[INFO] Exported BSEEJ transcript counts (b): {counts_b_path}")
+    print(f"[INFO] Exported BSEEJ transcript counts (beta): {counts_beta_path}")
 
 
 def needed_n_k_list(gene):
@@ -756,6 +1175,10 @@ def read_run_info(path):
 
 
 def is_converged_fwsr(likelihood, threshold=0.005):
+    # Convergence diagnostic is optional; if ArviZ is unavailable we simply
+    # report "not converged" so the sampler/optimizer runs to max iterations.
+    if az is None:
+        return False
     n0 = int(len(likelihood) / 2)
     this_ess = az.ess(np.array(likelihood[n0:]), method="quantile", prob=0.95)
     indices = range(n0, len(likelihood), int(this_ess))
