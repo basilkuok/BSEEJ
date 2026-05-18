@@ -1477,7 +1477,7 @@ class Model(object):
             
             self.update_beta_gibbs()
             
-            self.update_run_info(it, gene, burn_in)
+            self.update_run_info_gibbs(it, gene, burn_in)
             
             if it >= burn_in and it % convergence_checkpoint_interval == 0 and not self.converged:
     
