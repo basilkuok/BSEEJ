@@ -1290,8 +1290,8 @@ class Model(object):
                                                                       axis=-1)
         likelihood = np.sum(multinomial_pmf)
         return likelihood
-    
-    def log_likelihood_te(self, document_te):
+
+    def log_likelihood_te_gibbs(self, document_te):
         """Computes log likelihood of test"""
         n_k = self.run_info['N_K']
         likelihood_te = 0
