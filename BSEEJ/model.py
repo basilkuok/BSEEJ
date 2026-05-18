@@ -4,6 +4,15 @@ from scipy.special import gammaln, xlogy, psi
 from scipy.special import expit
 from scipy.stats import beta as sci_beta
 from scipy.stats import dirichlet, multinomial
+import numpy as np
+import bisect
+import os
+from copy import deepcopy
+from typing import Tuple
+
+# Check what does score in the junc.file mean, Professor think it is the number of reads that express that junction in the input file
+# Check the preprocessing in BAM file
+
 
 from utilities import *
 
