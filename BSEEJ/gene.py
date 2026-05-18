@@ -62,8 +62,10 @@ class Gene(object):
         columns = ['chrom', 'chromStart', 'chromEnd', 'junc_id', 'score', 'strand', 'start', 'end', 'f1', 'f2', 'f3',
                    'f4']
         samples_dfs = [pd.read_csv(f, sep='\t', names=columns, skiprows=1) for f in samples_list]
-        samples_df = pd.concat(samples_dfs)
-        samples_df = samples_df[samples_df['score'] >= min_coverage].reset_index(drop=True)
+        if not samples_dfs:
+            empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+            return empty, {}
+        samples_df = pd.concat(samples_dfs, ignore_index=True)
         # samples = []
         # for sample in samples_list:
         #     if '.gz' in sample:
