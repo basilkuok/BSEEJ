@@ -1472,7 +1472,7 @@ class Model(object):
             
             self.update_pi()
             
-            self.update_b()
+            self.update_b_gibbs()
             
             self.update_beta_gibbs()
             
