@@ -373,10 +373,71 @@ class Main(object):
         #     zip_ref.extractall(cls.p)
     
         # Make the model and gene objects
-        print('training gene', cls.g, 'with k =', cls.n_cluster)
-        model = Model(eta=cls.eta, alpha=cls.alpha, epsilon=epsilon, r=cls.r, s=cls.s)
-    
-        gene = Gene(cls.g, cls.p, cls.o)
+        requested_k = int(cls.n_cluster)
+        print('training gene', cls.g, 'with requested k =', requested_k)
+        model = Model(
+            eta=cls.eta,
+            alpha=cls.alpha,
+            epsilon=epsilon,
+            r=cls.r,
+            s=cls.s,
+            idx_suffix=cls.idx_suffix,
+        )
+        # Record sequencing / preprocessing mode on the model for provenance.
+        setattr(model, "long_mode", cls.long_mode)
+        # Control whether to emit the large utilities.save_results CSV.
+        setattr(model, "save_results", bool(getattr(cls, "save_result", 0)))
+
+        gene = Gene(
+            cls.g,
+            cls.p,
+            cls.o,
+            min_coverage=cls.min_cov,
+            idx_suffix=cls.idx_suffix,
+            variant=cls.variant,
+            annotation_path=cls.annotation_path,
+            novel_m=cls.novel_m,
+        )
+        setattr(gene, "long_mode", cls.long_mode)
+
+        # Disable expensive, non-essential outputs by default. This does not
+        # change inference; it only suppresses diagnostic/caching artifacts.
+        if not bool(getattr(cls, "diagnostics", 0)):
+            def _export_phi_zeta_csv_only(gene, K, method_label, phi, zeta):
+                suffix = f"_{model.idx_suffix}" if getattr(model, "idx_suffix", "") else ""
+                export_dir = gene.result_path
+                os.makedirs(export_dir, exist_ok=True)
+                joiner = f"_K_{K}{suffix}" if suffix else f"_K_{K}"
+
+                joint_csv = os.path.join(export_dir, f"{gene.name}_{method_label}_phi_zeta{joiner}.csv")
+                phi_flat_cols = phi.shape[1] * phi.shape[2]
+                n_cols = max(zeta.shape[1], phi_flat_cols)
+                header = "matrix,row_index," + ",".join(f"col_{j}" for j in range(n_cols))
+                with open(joint_csv, "w") as fh:
+                    fh.write(header + "\n")
+                    for i, row in enumerate(zeta):
+                        vals = list(map(str, row)) + [""] * (n_cols - len(row))
+                        fh.write("zeta (beta)," + str(i) + "," + ",".join(vals) + "\n")
+                    for d in range(phi.shape[0]):
+                        flattened = phi[d].reshape(-1)
+                        vals = list(map(str, flattened)) + [""] * (n_cols - len(flattened))
+                        fh.write("phi (z)," + str(d) + "," + ",".join(vals) + "\n")
+                print(f"[{str(method_label).upper()}] Wrote combined phi/zeta to {joint_csv}")
+
+            try:
+                setattr(model, "_export_phi_zeta_and_excel", _export_phi_zeta_csv_only)
+            except Exception:
+                pass
+            try:
+                setattr(model, "_save_elbo_plot", lambda *args, **kwargs: None)
+            except Exception:
+                pass
+            try:
+                setattr(gene, "_export_raw_junction_files", lambda *args, **kwargs: None)
+            except Exception:
+                pass
+
+        os.environ["BSEEJ_WRITE_PREPROC_CACHE"] = "1" if bool(getattr(cls, "write_preproc_cache", 0)) else "0"
     
         # Preprocess the gene
         gene.preprocess()
