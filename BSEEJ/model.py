@@ -1385,7 +1385,7 @@ class Model(object):
                 temp[new_cluster] = 1
                 self.b[k, :] = deepcopy(temp)
 
-    def update_beta(self):
+    def update_beta_gibbs(self):
         """Update \beta variable in the model"""
     
         # Sample from full conditional of Beta
