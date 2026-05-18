@@ -1334,7 +1334,7 @@ class Model(object):
             self.theta[doc, :] = np.random.dirichlet(self.alpha + np.sum(self.z[doc, :, :], axis=0))
         self.theta[self.theta < self.epsilon] = self.epsilon
 
-    def update_pi(self):
+    def update_pi_gibbs(self):
         """Update \pi variable in the model"""
     
         # update for pi
