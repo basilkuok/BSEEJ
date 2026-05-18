@@ -635,8 +635,18 @@ def save_results(gene, model):
     effective_k = z_matrix.shape[2]
     gene_name = model.run_info['gene']
     
-    starts = np.asarray([int(id2w[j].split('-')[0]) for j in range(n_introns)], np.int32)
-    ends = np.asarray([int(id2w[j].split('-')[1]) for j in range(n_introns)], np.int32)
+    def _parse_start_end(token: str):
+        # Supports legacy "start-end" and extended "chrom:start-end".
+        tok = str(token)
+        if ":" in tok:
+            tok = tok.split(":", 1)[1]
+        parts = tok.split("-")
+        if len(parts) < 2:
+            raise ValueError(f"Cannot parse intron token '{token}'")
+        return int(parts[0]), int(parts[1])
+
+    starts = np.asarray([_parse_start_end(id2w[j])[0] for j in range(n_introns)], np.int32)
+    ends = np.asarray([_parse_start_end(id2w[j])[1] for j in range(n_introns)], np.int32)
     
     result_df = pd.DataFrame(data=0, columns=['gene', 'trans_id', 'index', 'start', 'end', 'sample', 'FPKM'],
                              index=range(n_sample * effective_k * n_introns))
