@@ -6,14 +6,17 @@ Marjan Hosseini
 Devin J. McConnell  
 Derek Aguiar
 
+**Source-only BSEEJ_FINAL migration note**
+
+This fork contains the source-code-only migration of the current BSEEJ_FINAL model. Large generated evaluation outputs, raw FASTQ/BAM/SRA files, cached results, and solver benchmark archives are intentionally excluded from Git. The main runnable entry point remains `bseej.py`, with helper scripts for long-read junction extraction, annotation-based preparation, and per-gene parallel execution.
+
 **Graphical abstract**  
 <br/><br/>
-<img src="./docs/graphical_abstract.png" width="900">
+<img src="./long_read_documentation/graphical_abstract.png" width="900">
 <br/><br/>
 
 The code for the **BSEEJ** method is provided in `bseej.py`.  
-A compressed folder of junction files for one example gene (**A2ML1**) is included in this repository.  
-To run BSEEJ with default configurations, first install dependencies (e.g., from `requirements.txt` or `environment.yml`), then run `bseej.py`. A more detailed guide follows.
+To run BSEEJ_FINAL with default configurations, first install dependencies from `bseej_env.yml` or the pinned `requirement.txt`, then run `bseej.py`. For long-read data, use `build_junctions_from_bam.py`, `prepare_gene_inputs.py`, and `run_bseej_per_gene.py`.
 
 ---
 
@@ -29,25 +32,17 @@ cd BSEEJ
 
 **Option 1 (recommended): Conda**
 ```sh
-conda env create -f environment.yml
+conda env create -f bseej_env.yml
 conda activate bseej_env
 ```
 
-**Option 2: venv + pip (uses pinned versions from `requirements.txt`)**
+**Option 2: recreate from pinned package export**
 ```sh
-python -m venv .venv
-# Linux / macOS
-source .venv/bin/activate
-
-
-pip install --upgrade pip
-pip install -r requirements.txt
+conda create --name bseej_final --file requirement.txt
+conda activate bseej_final
 ```
 
-3. Unzip the example data:
-```sh
-unzip A2ML1.zip
-```
+3. Provide a directory containing `.junc` files, or generate them from BAMs with `build_junctions_from_bam.py` / `extract_junctions.sh`.
 <!-- > Using `-d A2ML1` ensures the data lands in a predictable folder you can reference later. -->
 
 ---
@@ -161,7 +156,7 @@ After portcullis is complete we do an overlap check between the junctions found 
 
 **BREM Probabilistic Graphical Model** 
 <br/><br/>
-<img src="./docs/model.png" width="900"> 
+<img src="./long_read_documentation/model.png" width="900"> 
 <br/><br/>
 
 Main **variables and parameters** include:
