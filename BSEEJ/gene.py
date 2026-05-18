@@ -187,6 +187,10 @@ class Gene(object):
         node_n = number of nodes in the generated graph
         Irange: (integer): The range, in which the intervals fall into"""
         
+        # Handle genes with no junction evidence gracefully.
+        if getattr(self, "samples_df", None) is None or len(self.samples_df) == 0:
+            return pd.DataFrame(columns=["start", "length", "end", "graph_labels", "node_labels"])
+
         junc_num = self.samples_df.shape[0]
         # Keep chromosome/strand metadata so whole-sample runs do not conflate
         # unrelated loci.
