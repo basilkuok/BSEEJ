@@ -80,6 +80,39 @@ class Gene(object):
         # self.nodes_df = None
         # self.min_k = None
 
+    # --- Helpers for caching expensive preprocessing state -----------------
+
+    def _build_preprocess_signature(self):
+        """
+        Build a lightweight signature of the junction inputs (junc/jxs/all_jxs
+        files under junc_path) so we can detect when cached preprocessing
+        state is still valid. We use filenames + size + mtime.
+        """
+        files = []
+        if os.path.isdir(self.junc_path):
+            for fname in sorted(os.listdir(self.junc_path)):
+                if not (
+                    fname.endswith(".junc")
+                    or fname.endswith(".jxs.tsv")
+                    or fname.endswith(".all_jxs.tsv")
+                ):
+                    continue
+                path = os.path.join(self.junc_path, fname)
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                files.append(
+                    {
+                        "name": fname,
+                        "size": int(st.st_size),
+                        "mtime": int(st.st_mtime),
+                    }
+                )
+        # JSON is stable and human-readable; order is deterministic due to
+        # sorted filenames.
+        return json.dumps(files, separators=(",", ":"))
+
     def get_sample_df(self):
         """Compute the gene's intron excisions from .junc files."""
         # Deterministic ordering is important because downstream outputs use
