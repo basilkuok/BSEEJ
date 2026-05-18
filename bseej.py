@@ -441,6 +441,74 @@ class Main(object):
     
         # Preprocess the gene
         gene.preprocess()
+        effective_k = int(getattr(gene, "effective_k", requested_k) or requested_k)
+        print('effective k used for inference =', effective_k)
+
+        # Skip genes with insufficient junction evidence to train a non-trivial model.
+        # This commonly happens when a per-gene folder exists but all junctions were
+        # filtered out (e.g., min_cov) or the interval graph is trivial.
+        try:
+            n_v = int(getattr(gene, "n_v", 0) or 0)
+        except Exception:
+            n_v = 0
+        try:
+            doc = getattr(gene, "document", None)
+            v_doc = int(doc.shape[1]) if doc is not None and hasattr(doc, "shape") else 0
+        except Exception:
+            v_doc = 0
+        if not getattr(gene, "trainable", True) or n_v < 2 or v_doc < 1:
+            # For assembly evaluation, avoid dropping "simple" genes that have
+            # evidence but no interval conflicts (min_k < 2). Emit a single
+            # transcript that chains all introns in order.
+            min_k = getattr(gene, "min_k", None)
+            has_evidence = getattr(gene, "samples_df", None) is not None and len(getattr(gene, "samples_df", [])) > 0
+            # Always export assembly artifacts when possible.
+            if has_evidence and (min_k is not None and int(min_k) < 2):
+                method = {1: "gibbs", 2: "cavi", 3: "svi"}.get(int(cls.mode), "cavi")
+                _export_trivial_single_transcript(
+                    gene,
+                    method_label=method,
+                    k_requested=effective_k,
+                    idx_suffix=str(getattr(cls, "idx_suffix", "") or ""),
+                )
+                return
+
+            print(f"[INFO] Gene {gene.name} is not trainable (n_v={n_v}, V_doc={v_doc}); skipping.")
+            return
+
+        # Train the gene based on selected inference mode
+        if cls.mode == 1:
+            train_gibbs = getattr(model, 'train_gibbs', None)
+            if train_gibbs is None:
+                raise AttributeError("Mode 1 requested, but Model.train_gibbs is not available.")
+            train_gibbs(
+                gene,
+                effective_k,
+                n_iter=cls.max_n_iter,
+                burn_in=burn_in,
+                convergence_checkpoint_interval=convergence_checkpoint_interval,
+                verbose=True,
+            )
+        elif cls.mode == 2:
+            model.train(
+                gene,
+                effective_k,
+                n_iter=cls.max_n_iter,
+                burn_in=burn_in,
+                convergence_checkpoint_interval=convergence_checkpoint_interval,
+                verbose=True,
+            )
+        elif cls.mode == 3:
+            batch_size = max(1, int(gene.document.shape[0] // 10)) if hasattr(gene, "document") else 1
+            model.train_svi(
+                gene,
+                effective_k,
+                n_iter=cls.max_n_iter,
+                batch_size=batch_size,
+                verbose=True,
+            )
+        else:
+            raise ValueError(f"Unsupported inference mode '{cls.mode}'. Expected 1, 2, or 3.")
         
         # Train the gene
         model.train(gene, cls.n_cluster, n_iter=cls.max_n_iter, burn_in=burn_in,
