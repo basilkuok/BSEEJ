@@ -1469,7 +1469,7 @@ class Model(object):
             
             self.update_z_gibbs()
             
-            self.update_theta()
+            self.update_theta_gibbs()
             
             self.update_pi()
             
