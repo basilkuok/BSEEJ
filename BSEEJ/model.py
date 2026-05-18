@@ -27,6 +27,7 @@ class Model(object):
         self.theta = None
         self.pi = None
         self.b = None
+
         self.converged = None
         self.z_init = None
         self.run_info = None
