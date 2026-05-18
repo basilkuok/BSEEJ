@@ -1372,7 +1372,20 @@ class Model(object):
             temp_b = np.array([v + self.epsilon if v == 0 else v for v in list(self.b[k, :])])
             self.beta[k, :] = np.random.dirichlet(temp_b * self.eta + np.sum(self.z[:, :, k], axis=0))
 
-    def update_run_info(self, t, gg, burn_in):
+            # Optional long-read co-occurrence prior: bias the Dirichlet
+            # concentration for β_k so that introns that co-occur with the
+            # currently included introns in cluster k receive additional
+            # pseudo-counts.
+            if getattr(self, "cooc_strength", 0.0) > 0.0 and getattr(self, "cooc_matrix", None) is not None:
+                b_row = self.b[k, :].astype(float)
+                cooc_term = b_row @ self.cooc_matrix  # (V,)
+                prior_vec = prior_vec + self.cooc_strength * cooc_term
+
+            alpha_vec = prior_vec + np.sum(self.z[:, :, k], axis=0)
+            alpha_vec = np.maximum(alpha_vec, self.epsilon)
+            self.beta[k, :] = np.random.dirichlet(alpha_vec)
+
+    def update_run_info_gibbs(self, t, gg, burn_in):
         """saves Gibbs iteration info in the data"""
     
         self.run_info['gibbs'][t]['Theta'] = deepcopy(self.theta)
