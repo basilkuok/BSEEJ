@@ -627,11 +627,6 @@ def save_results(gene, model):
     # ensure the per-run result directory exists
     if not os.path.exists(gene.result_path):
         os.mkdir(gene.result_path)
-    # pickle.dump(model.run_info, open(gene.result_path + '/' + 'run_info_' + comb_name + '.json', 'wb'))
-    filename = gene.result_path + '/' + 'run_info_' + comb_name + '.pkl'
-    file_s = gzip.GzipFile(filename, 'wb')
-    pickle.dump(model.run_info, file_s)
-    print(filename, 'saved.')
     
     z_matrix = model.run_info['new_Z']
     id2w = model.run_info['id2w_dict']
