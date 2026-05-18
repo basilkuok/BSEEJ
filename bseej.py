@@ -346,6 +346,17 @@ class Main(object):
 
         print('Number of clusters:', cls.n_cluster)
         print('Maximum number of iterations:', cls.max_n_iter)
+        print('Minimum junction coverage (junction/node filtering inside JARVIS):', cls.min_cov)
+        print('Sequencing mode (-long):', cls.long_mode, '(0=short-read, 1=long-read)')
+        if cls.idx_suffix:
+            print('Output filename suffix:', cls.idx_suffix)
+        print('Variant:', cls.variant)
+        if cls.annotation_path:
+            print('Annotation path:', cls.annotation_path)
+        if cls.novel_m is not None:
+            print('Novel transcript offset m:', cls.novel_m)
+        print('Inference mode (1=Gibbs, 2=CAVI, 3=SVI):', cls.mode)
+        print('Save full result CSVs (-save_result):', getattr(cls, 'save_result', 0), '(0=disabled, 1=enabled)')
     
         print('model parameter, eta:', cls.eta)
         print('model parameter, alpha:', cls.alpha)
