@@ -152,9 +152,29 @@ class Gene(object):
         if len(samples_df) == 0:
             return [], []
         else:
-        
-            samples_df = samples_df.groupby(['chromEnd', 'chromStart'])['score'].sum().reset_index()
-        
+            # Aggregate counts per unique intron across all samples.
+            # For whole-sample inputs we must keep chromosome (and strand if present)
+            # distinct; otherwise introns on different chromosomes with the same
+            # start/end would be merged incorrectly.
+            group_cols = ['chrom', 'chromEnd', 'chromStart']
+            if 'strand' in samples_df.columns:
+                group_cols.append('strand')
+            samples_df = samples_df.groupby(group_cols, dropna=False)['score'].sum().reset_index()
+
+            # Optional hard coverage filter (e.g. min_coverage = 30) applied
+            # once at node-definition time, mirroring the older pipeline.
+            min_cov = getattr(self, "min_coverage", 0)
+            try:
+                min_cov = int(min_cov)
+            except (TypeError, ValueError):
+                min_cov = 0
+            if min_cov > 0:
+                samples_df = samples_df[samples_df['score'] >= min_cov].reset_index(drop=True)
+
+            if len(samples_df) == 0:
+                empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+                return empty, {}
+
             samples_df_dict = {}
             for i in range(len(samples_df)):
                 samples_df_dict[i] = {}
