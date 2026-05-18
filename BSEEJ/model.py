@@ -1450,7 +1450,8 @@ class Model(object):
         self.initialize_vars(gene, n_k)
         self.make_run_info(gene, n_k, burn_in, convergence_checkpoint_interval, n_iter)
         self.run_info['gibbs'] = {}
-    
+        self.run_info['inference'] = 'gibbs'
+
         startiter = time.time()
         it = 0
         while it <= min(self.run_info['convergence_point'] + 100, n_iter):
