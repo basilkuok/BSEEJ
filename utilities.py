@@ -609,11 +609,19 @@ def save_results(gene, model):
     # the comb_name is replaced for VI because filename is too long
     comb_suffix = f"_K_{model.run_info['N_K']}" + suffix
     comb_name = 'gene_' + gene.name + '_alpha_' + str(model.alpha) + '_eta_' + str(model.eta) + '_epsilon_' + \
-                str(model.epsilon) + '_rs_' + str(model.r) + '_K_' + str(model.run_info['N_K'])
-    last_run = list(model.run_info['gibbs'])[-1]
-    last_z = deepcopy(model.run_info['gibbs'][last_run]['Z'])
-    last_b = deepcopy(model.run_info['gibbs'][last_run]['b'])
-    new_b, new_z = merge_suplicate_clusters(last_b, last_z)
+               str(model.epsilon) + '_rs_' + str(model.r) + comb_suffix + '_method_' + method_label
+    #comb_name_VI = 'gene_' + gene.name + '_alpha_' + str(model.alpha) + '_eta_' + '_epsilon_' + \
+                #str(model.epsilon) + '_rs_' + str(model.r) + '_K_' + str(model.run_info['N_K'])
+    # For VI modes, avoid depending on per-iteration run_info snapshots
+    # (which are expensive to store). Prefer the final variational state.
+    last_z = model.run_info.get('final_phi', None)
+    last_b = model.run_info.get('final_b_mask', None)
+    if last_z is None or last_b is None:
+        # Backward-compatible fallback: use the last recorded snapshot if present.
+        last_run = list(model.run_info['gibbs'])[-1]
+        last_z = deepcopy(model.run_info['gibbs'][last_run]['Z'])
+        last_b = deepcopy(model.run_info['gibbs'][last_run]['b'])
+    new_b, new_z = merge_suplicate_clusters(np.asarray(last_b), np.asarray(last_z))
     model.run_info['new_b'] = deepcopy(new_b)
     model.run_info['new_Z'] = deepcopy(new_z)
     # save the result
