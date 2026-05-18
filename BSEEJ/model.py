@@ -151,8 +151,8 @@ class Model(object):
                     likelihood_te += multinomial.logpmf(temp_x, np.sum(temp_x), temp_beta)
         likelihood_te = likelihood_te / (document_te.shape[0] * n_k)
         return likelihood_te
-    
-    def update_z(self):
+
+    def update_z_gibbs(self):
         """Update z variable in the model"""
         # Sample from full conditional of Z
         # save for computing relative error
