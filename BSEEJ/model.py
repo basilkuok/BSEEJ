@@ -1415,8 +1415,8 @@ class Model(object):
         self.run_info['gibbs'][t]['b'] = deepcopy(self.b)
         self.run_info['gibbs'][t]['error'] = np.sum(np.abs(self.z - self.z_init)) / (
                 self.run_info['N_D'] * self.run_info['N_W'])
-        self.run_info['gibbs'][t]['likelihood_i'] = self.log_likelihood()
-        self.run_info['gibbs'][t]['likelihood_te'] = self.log_likelihood_te(gg.document_te)
+        self.run_info['gibbs'][t]['likelihood_i'] = self.log_likelihood_gibbs()
+        self.run_info['gibbs'][t]['likelihood_te'] = self.log_likelihood_te_gibbs(gg.document_te)
     
         if t == 0:
             self.run_info['gibbs'][t]['relative_error'] = np.sum(np.abs(self.z - self.z_init)) / (
