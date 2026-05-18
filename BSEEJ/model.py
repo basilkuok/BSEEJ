@@ -1264,8 +1264,9 @@ class Model(object):
         self.run_info['document_te'] = gene.document_te
         self.run_info['tr_idx'] = gene.training_idx
         self.run_info['te_idx'] = gene.test_idx
-    
-    def log_likelihood(self):
+        self.run_info['idx_suffix'] = self.idx_suffix
+
+    def log_likelihood_gibbs(self):
         """Computes log likelihood at the end of each Gibbs iteration"""
         n_d = self.z.shape[0]
         n_v = self.z.shape[1]
