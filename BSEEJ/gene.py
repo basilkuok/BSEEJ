@@ -354,11 +354,11 @@ class Gene(object):
 
     def _node_chains_conflict(self, chain1, chain2):
         """
-        Return whether two observation tokens are structurally incompatible.
+        Return whether two structural tokens are incompatible in the same SEEJ.
 
-        Exact shared intron components are compatible: a topic can emit both a
-        singleton read for intron v and a multi-junction path containing v.
-        Partial overlaps between different introns remain incompatible.
+        A multi-junction path node structurally contains its component introns,
+        so it conflicts with singleton nodes for those exact introns. Partial
+        overlaps between different introns also remain incompatible.
         """
         if not chain1 or not chain2:
             return False, 0.0
@@ -375,7 +375,7 @@ class Gene(object):
                 if c1 and c2 and c1 != c2:
                     continue
                 if c1 == c2 and s1 == s2 and e1 == e2:
-                    continue
+                    return True, 1.0
                 if e1 > s2 and s1 < e2:
                     overlap_len = min(e1, e2) - max(s1, s2)
                     if overlap_len <= 0:
