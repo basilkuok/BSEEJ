@@ -6,24 +6,27 @@ Lightweight junction extractor for JARVIS, implemented in pure Python + samtools
 This script builds the three files JARVIS needs from a single sorted BAM:
 
   1) <prefix>.all_jxs.tsv
-       One line per intron excision (per read), with columns:
+       One line per single-junction read, with columns:
          qname, chrom, intron_start, intron_end, strand, CIGAR, is_unique
-       This is the same input format expected by
+       This singleton-only stream is the input format expected by
        megadepth-master/junctions/process_jx_output.sh.
 
   2) <prefix>.all_jxs.tsv.sjout  (via process_jx_output.sh)
        STAR SJ.out-like aggregate per intron.
 
   3) <prefix>.bam.junc
-       Final 6-column junction file used by JARVIS:
+       Final 6-column junction file used by BSEEJ for singleton intron tokens:
          chrom, chromStart, chromEnd, ".", score, "."
-       where score = unique_count + multi_count.
+       where score = unique_count + multi_count over single-junction reads only.
 
   4) <prefix>.jxs.tsv
-       Co-occurrence file: one line per multi-junction read with a list of
-       "start-end" coordinate pairs in the 6th field. JARVIS uses only this
-       6th field (and, for paired-end, an optional 13th field) to build
-       multi-junction path nodes and the intron co-occurrence matrix.
+       Multi-junction path file: one line per read with two or more introns,
+       with a comma-separated list of "start-end" coordinate pairs in the 6th
+       field. BSEEJ uses this field to build observed multi-junction path nodes.
+
+Path-exclusive counting is deliberate: a read with one junction contributes one
+intron token, while a read with multiple junctions contributes one path token and
+is not also counted as individual intron observations.
 
 Usage
 -----
@@ -231,14 +234,20 @@ def build_all_jxs_and_jxs(
     strip_chr: bool = False,
 ) -> Tuple[str, str]:
     """
-    Build <prefix>.all_jxs.tsv and <prefix>.jxs.tsv from a BAM file.
+    Build path-exclusive <prefix>.all_jxs.tsv and <prefix>.jxs.tsv from a BAM.
+
+    Single-junction reads are written to all_jxs.tsv so they become intron
+    tokens in the .junc file. Multi-junction reads are written only to jxs.tsv
+    so they become one observed path token and are not also counted per intron.
 
     Returns (all_jxs_path, jxs_path).
     """
     all_jxs_path = prefix + ".all_jxs.tsv"
     jxs_path = prefix + ".jxs.tsv"
 
-    os.makedirs(os.path.dirname(prefix), exist_ok=True)
+    out_dir = os.path.dirname(prefix)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     with open(all_jxs_path, "w") as f_all, open(jxs_path, "w") as f_jxs:
         for qname, flag, rname, pos, mapq, cigar, strand_char in iter_bam_alignments(
@@ -254,23 +263,18 @@ def build_all_jxs_and_jxs(
 
             # Approximate Megadepth's default uniqueness heuristic:
             #   unique_aln = (MAPQ >= 10) when no explicit threshold is set.
-            # process_jx_output.sh only uses is_unique to split counts into
-            # "unique" vs "multi", which JARVIS later sums, but we keep the
-            # distinction for fidelity.
             is_unique = "1" if mapq >= 10 else "0"
 
-            # 1) Emit one line per intron for all_jxs.tsv
-            for s, e in introns:
+            if len(introns) == 1:
+                # Singleton reads become ordinary intron-count observations.
+                s, e = introns[0]
                 f_all.write(
                     f"{qname}\t{rname}\t{s}\t{e}\t{strand_char}\t{cigar}\t{is_unique}\n"
                 )
-
-            # 2) Emit a single co-occurrence line per read with >=2 introns
-            if len(introns) >= 2:
+            else:
+                # Multi-junction reads become exactly one path observation.
                 intron_tokens = [f"{s}-{e}" for (s, e) in introns]
                 intron_list = ",".join(intron_tokens)
-                # Minimal header: chrom, read_start, strand, tlen (0), cigar, intron_list, is_unique
-                # JARVIS only uses the 6th field (intron_list).
                 f_jxs.write(
                     f"{rname}\t{pos}\t{strand_char}\t0\t{cigar}\t{intron_list}\t{is_unique}\n"
                 )
@@ -352,7 +356,7 @@ def main(argv: List[str]) -> int:
         sys.stderr.write(f"ERROR: BAM file '{bam_path}' not found.\n")
         return 1
 
-    # 1) Build all_jxs and jxs from BAM.
+    # 1) Build singleton intron and multi-junction path streams from BAM.
     all_jxs_path, jxs_path = build_all_jxs_and_jxs(
         bam_path,
         prefix,
