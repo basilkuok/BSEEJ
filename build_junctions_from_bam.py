@@ -20,9 +20,10 @@ This script builds the three files JARVIS needs from a single sorted BAM:
        where score = unique_count + multi_count.
 
   4) <prefix>.jxs.tsv
-       Multi-junction path file: one line per read with two or more introns,
-       with a comma-separated list of "start-end" coordinate pairs in the 6th
-       field. BSEEJ uses this field to build observed multi-junction path nodes.
+       Co-occurrence file: one line per multi-junction read with a list of
+       "start-end" coordinate pairs in the 6th field. JARVIS uses only this
+       6th field (and, for paired-end, an optional 13th field) to build
+       multi-junction path nodes and the intron co-occurrence matrix.
 
 Usage
 -----
@@ -264,7 +265,7 @@ def build_all_jxs_and_jxs(
                     f"{qname}\t{rname}\t{s}\t{e}\t{strand_char}\t{cigar}\t{is_unique}\n"
                 )
 
-            # 2) Emit one multi-junction path line per read with >=2 introns
+            # 2) Emit a single co-occurrence line per read with >=2 introns
             if len(introns) >= 2:
                 intron_tokens = [f"{s}-{e}" for (s, e) in introns]
                 intron_list = ",".join(intron_tokens)

@@ -58,6 +58,7 @@ class Gene(object):
         self.document = None
         self.id2w_dict = None
         self.w2id_dict = None
+        self.cooc_matrix = None
         self.node_introns = []
         self.reference_transcripts = {}
         self.reference_intron_to_txs = {}
@@ -624,6 +625,10 @@ class Gene(object):
         # independent set without recomputing the interval graph.
         self.mis, self.max_ind_set = _maximum_independent_set_from_intersection(self.intersection)
 
+        # Optional: compute intron co-occurrence from Megadepth --junctions output, if present.
+        # This captures how often introns co-occur in multi-junction reads and can be used by
+        # the variational model as a soft prior over clusters.
+        self.cooc_matrix = self._compute_cooccurrence_from_jxs()
 
         # For debugging and provenance, export the raw Megadepth junction
         # outputs (if present) into the gene-specific result directory.
@@ -639,6 +644,7 @@ class Gene(object):
             "intersection": self.intersection,
             "overlap_m": self.overlap_m,
             "mvc": self.mvc,
+            "cooc_matrix": self.cooc_matrix,
             "node_introns": self.node_introns,
             "reference_k": self.reference_k,
             "effective_k": self.effective_k,
@@ -745,6 +751,128 @@ class Gene(object):
                     # Debug export is best-effort; ignore copy failures.
                     continue
 
+    def _compute_cooccurrence_from_jxs(self):
+        """
+        Build an intron co-occurrence matrix from Megadepth --junctions (*.jxs.tsv) outputs.
+
+        cooc[v,u] encodes how often intron v co-occurs with intron u in multi-junction reads,
+        scaled by:
+            - how frequently v appears in multi-junction reads, and
+            - the fraction of v's total support that comes from such reads.
+
+        Returns
+        -------
+        np.ndarray or None
+            A (V,V) matrix of floats if any co-occurrence is observed; otherwise None.
+        """
+        # We need a mapping from "start-end" to intron index.
+        if self.nodes_df is None or self.nodes_df.shape[0] == 0:
+            return None
+        if self.w2id_dict is None:
+            return None
+
+        # Discover *.jxs.tsv files (Megadepth --junctions outputs) in the same directory as .junc files.
+        try:
+            jxs_files = [
+                os.path.join(self.junc_path, f)
+                for f in os.listdir(self.junc_path)
+                if f.endswith(".jxs.tsv")
+            ]
+        except FileNotFoundError:
+            return None
+        if not jxs_files:
+            return None
+
+        V = self.nodes_df.shape[0]
+        cooc = np.zeros((V, V), dtype=np.float64)
+        long_counts = np.zeros(V, dtype=np.float64)
+
+        for path in jxs_files:
+            try:
+                with open(path, "r") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        fields = line.split("\t")
+                        if len(fields) < 6:
+                            continue
+                        # Megadepth --junctions output may include 1 mate (6-7 fields)
+                        # or 2 mates (14 fields). Each mate has its own chromosome.
+                        coord_parts = [(fields[0], fields[5])]
+                        if len(fields) > 12:
+                            coord_parts.append((fields[7], fields[12]))
+                        # If mates disagree on chromosome, treat as chimeric and ignore.
+                        if len(coord_parts) > 1 and coord_parts[0][0] != coord_parts[1][0]:
+                            continue
+
+                        intron_idx_set = set()
+                        for chrom, cstr in coord_parts:
+                            if not cstr:
+                                continue
+                            for tok in cstr.split(","):
+                                tok = tok.strip()
+                                if not tok:
+                                    continue
+                                # Megadepth emits "start-end" 1-based coordinates; these
+                                # match the keys we use in w2id_dict.
+                                key = tok
+                                if getattr(self, "_use_chrom_in_keys", False):
+                                    key = f"{chrom}:{tok}"
+                                if key in self.w2id_dict:
+                                    intron_idx_set.add(self.w2id_dict[key])
+
+                        intron_idx_list = sorted(intron_idx_set)
+                        if len(intron_idx_list) < 2:
+                            # We only care about true multi-junction reads here.
+                            continue
+
+                        # Track how often each intron participates in multi-junction reads.
+                        for v in intron_idx_list:
+                            long_counts[v] += 1.0
+
+                        # Increment pairwise co-occurrence counts.
+                        for i in range(len(intron_idx_list)):
+                            v1 = intron_idx_list[i]
+                            for j in range(i + 1, len(intron_idx_list)):
+                                v2 = intron_idx_list[j]
+                                cooc[v1, v2] += 1.0
+                                cooc[v2, v1] += 1.0
+            except OSError:
+                continue
+
+        if long_counts.sum() == 0.0 or not np.any(cooc):
+            return None
+
+        # Total intron counts across all samples (from the full document).
+        total_counts = None
+        try:
+            if self.document is not None:
+                total_counts = np.sum(self.document, axis=0).astype(np.float64)
+        except Exception:
+            total_counts = None
+
+        # Build a co-occurrence prior matrix:
+        #   cooc_prior[v,u] ~= P(u | v, multi-junction) * frac_long_reads(v)
+        cooc_prior = np.zeros_like(cooc)
+        for v in range(V):
+            if long_counts[v] <= 0.0:
+                continue
+            row = cooc[v, :]
+            if not np.any(row):
+                continue
+            # Conditional distribution of partners u given v in multi-junction reads
+            row_norm = row / long_counts[v]
+            weight_v = 1.0
+            if total_counts is not None and total_counts[v] > 0.0:
+                # Fraction of v's total support coming from multi-junction reads
+                weight_v = float(long_counts[v] / total_counts[v])
+            cooc_prior[v, :] = row_norm * weight_v
+
+        if not np.any(cooc_prior):
+            return None
+
+        return cooc_prior
 
     def _augment_with_long_read_paths(self):
         """

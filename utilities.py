@@ -493,52 +493,6 @@ def _maximum_independent_set_from_intersection(intersection_m, candidate_vertice
     return mis_size, mis_global
 
 
-def _maximum_independent_set_from_intersection(intersection_m, candidate_vertices=None):
-    """
-    Helper: compute a maximum independent set of the conflict graph whose
-    adjacency is given by ``intersection_m``.
-
-    Parameters
-    ----------
-    intersection_m : np.ndarray, shape (V, V)
-        Symmetric {0,1} adjacency matrix with zeros on the diagonal.
-    candidate_vertices : optional iterable of int
-        If provided, restrict the MIS search to the subgraph induced by this
-        vertex subset.
-
-    Returns
-    -------
-    (int, list[int])
-        Size of the maximum independent set and a list of vertex indices in
-        the original graph.
-    """
-    n_v = intersection_m.shape[0]
-    if candidate_vertices is None:
-        verts = np.arange(n_v, dtype=np.int32)
-    else:
-        verts = np.array(list(candidate_vertices), dtype=np.int32)
-
-    n_sub = verts.shape[0]
-    if n_sub == 0:
-        return 0, []
-
-    # Build complement edges for the induced subgraph on verts.
-    comp_edges = []
-    for i in range(n_sub):
-        gi = verts[i]
-        row = intersection_m[gi]
-        for j in range(i + 1, n_sub):
-            gj = verts[j]
-            if row[gj] == 0:
-                comp_edges.append((i, j))
-
-    mis_size, clique_vertices_local = _run_clisat_max_clique(n_sub, comp_edges)
-    if not clique_vertices_local:
-        return mis_size, []
-    mis_global = [int(verts[int(lv)]) for lv in clique_vertices_local]
-    return mis_size, mis_global
-
-
 def get_initialization(nodes_df, n_k):
     """
     Backwards-compatible entry point: delegate to the CliSAT-based
