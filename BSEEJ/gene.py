@@ -150,11 +150,32 @@ class Gene(object):
         samples_df = samples_df.astype({"chromStart": np.int32, "chromEnd": np.int32, "score": np.int32})
     
         if len(samples_df) == 0:
-            return [], []
+            empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+            return empty, {}
         else:
-        
-            samples_df = samples_df.groupby(['chromEnd', 'chromStart'])['score'].sum().reset_index()
-        
+            # Aggregate counts per unique intron across all samples.
+            # For whole-sample inputs we must keep chromosome (and strand if present)
+            # distinct; otherwise introns on different chromosomes with the same
+            # start/end would be merged incorrectly.
+            group_cols = ['chrom', 'chromEnd', 'chromStart']
+            if 'strand' in samples_df.columns:
+                group_cols.append('strand')
+            samples_df = samples_df.groupby(group_cols, dropna=False)['score'].sum().reset_index()
+
+            # Optional hard coverage filter (e.g. min_coverage = 30) applied
+            # once at node-definition time, mirroring the older pipeline.
+            min_cov = getattr(self, "min_coverage", 0)
+            try:
+                min_cov = int(min_cov)
+            except (TypeError, ValueError):
+                min_cov = 0
+            if min_cov > 0:
+                samples_df = samples_df[samples_df['score'] >= min_cov].reset_index(drop=True)
+
+            if len(samples_df) == 0:
+                empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+                return empty, {}
+
             samples_df_dict = {}
             for i in range(len(samples_df)):
                 samples_df_dict[i] = {}
@@ -168,13 +189,21 @@ class Gene(object):
         Irange: (integer): The range, in which the intervals fall into"""
         
         junc_num = self.samples_df.shape[0]
-        nodes_df = pd.DataFrame(data=np.zeros([junc_num, 3]), dtype=np.int32,
-                                columns=['start', 'length', 'end'],
-                                index=range(0, junc_num))
+        # Keep chromosome/strand metadata so whole-sample runs do not conflate
+        # unrelated loci.
+        nodes_df = pd.DataFrame(
+            data=np.zeros([junc_num, 3]),
+            columns=['start', 'length', 'end'],
+            index=range(0, junc_num),
+        )
         
         nodes_df['start'] = self.samples_df.chromStart
         nodes_df['end'] = self.samples_df.chromEnd
         nodes_df['length'] = nodes_df['end'] - nodes_df['start']
+        if 'chrom' in self.samples_df.columns:
+            nodes_df['chrom'] = self.samples_df.chrom.astype(str).values
+        if 'strand' in self.samples_df.columns:
+            nodes_df['strand'] = self.samples_df.strand.astype(str).values
         
         # Sort primarily by chromosome to keep related loci together, then by end.
         sort_cols = ['end']
@@ -273,6 +302,13 @@ class Gene(object):
             node_introns.append(((chrom, start, end),))
         self.node_introns = node_introns
 
+    def _format_intron_token(self, intron):
+        chrom, start, end = intron
+        token = f"{int(start)}-{int(end)}"
+        if getattr(self, "_use_chrom_in_keys", False) and chrom:
+            token = f"{chrom}:{token}"
+        return token
+
     def _rebuild_token_maps(self):
         self.id2w_dict = {}
         self.w2id_dict = {}
@@ -283,19 +319,20 @@ class Gene(object):
         self._use_chrom_in_keys = len([c for c in chroms if c and c != "nan"]) > 1
 
         for idx in range(self.nodes_df.shape[0]):
-            start = int(self.nodes_df.loc[idx, "start"])
-            end = int(self.nodes_df.loc[idx, "end"])
-            token = f"{start}-{end}"
-            if self._use_chrom_in_keys and "chrom" in self.nodes_df.columns:
-                token = f"{self.nodes_df.loc[idx, 'chrom']}:{token}"
-            self.id2w_dict[idx] = token
             introns = self.node_introns[idx] if idx < len(self.node_introns) else ()
+            if len(introns) > 1:
+                token = ",".join(self._format_intron_token(intron) for intron in introns)
+            elif len(introns) == 1:
+                token = self._format_intron_token(introns[0])
+            else:
+                start = int(self.nodes_df.loc[idx, "start"])
+                end = int(self.nodes_df.loc[idx, "end"])
+                token = f"{start}-{end}"
+                if self._use_chrom_in_keys and "chrom" in self.nodes_df.columns:
+                    token = f"{self.nodes_df.loc[idx, 'chrom']}:{token}"
+            self.id2w_dict[idx] = token
             if len(introns) == 1:
-                chrom, intr_start, intr_end = introns[0]
-                intr_token = f"{intr_start}-{intr_end}"
-                if self._use_chrom_in_keys and chrom:
-                    intr_token = f"{chrom}:{intr_token}"
-                self.w2id_dict[intr_token] = idx
+                self.w2id_dict[token] = idx
 
     def _node_reference_tx_sets(self):
         tx_sets = []
@@ -314,6 +351,39 @@ class Gene(object):
                     break
             tx_sets.append(set() if chain_txs is None else chain_txs)
         return tx_sets
+
+    def _node_chains_conflict(self, chain1, chain2):
+        """
+        Return whether two structural tokens are incompatible in the same SEEJ.
+
+        A multi-junction path node structurally contains its component introns,
+        so it conflicts with singleton nodes for those exact introns. Partial
+        overlaps between different introns also remain incompatible.
+        """
+        if not chain1 or not chain2:
+            return False, 0.0
+
+        best_overlap = 0.0
+        for chrom1, start1, end1 in chain1:
+            c1 = str(chrom1 or "")
+            s1 = int(start1)
+            e1 = int(end1)
+            for chrom2, start2, end2 in chain2:
+                c2 = str(chrom2 or "")
+                s2 = int(start2)
+                e2 = int(end2)
+                if c1 and c2 and c1 != c2:
+                    continue
+                if c1 == c2 and s1 == s2 and e1 == e2:
+                    return True, 1.0
+                if e1 > s2 and s1 < e2:
+                    overlap_len = min(e1, e2) - max(s1, s2)
+                    if overlap_len <= 0:
+                        continue
+                    denom = ((e2 - s2) + (e1 - s1)) / 2.0
+                    overlap_pct = overlap_len / denom if denom > 0 else 0.0
+                    best_overlap = max(best_overlap, overlap_pct)
+        return best_overlap > 0.0, best_overlap
 
     def _apply_node_filter(self, keep_mask):
         keep_idx = np.where(np.asarray(keep_mask, dtype=bool))[0]
@@ -363,18 +433,30 @@ class Gene(object):
         return active, overlap_m
     
     def get_conflict(self):
-        """Find the intervals that have intersection.
+        """Find structurally incompatible observation tokens.
 
-        If per-node segment columns (seg_start_i/seg_end_i) are present, we
-        treat each node as a union of segments and declare a conflict when
-        any pair of segments overlaps. Otherwise, we fall back to a simple
-        single-interval overlap check on start/end.
+        For intron/path nodes, conflict means there is no transcript structure
+        that can contain both tokens. Shared exact intron components are allowed,
+        so a path token remains compatible with its own singleton components.
         """
         V = self.nodes_df.shape[0]
         intersection_m = np.zeros([V, V], dtype=np.int32)
         overlap_m = np.zeros([V, V])
 
-        # Detect available segment indices.
+        node_introns = getattr(self, "node_introns", None)
+        use_node_chains = isinstance(node_introns, list) and len(node_introns) == V
+        if use_node_chains:
+            for v1 in range(V):
+                for v2 in range(v1 + 1, V):
+                    has_overlap, overlap_pct = self._node_chains_conflict(node_introns[v1], node_introns[v2])
+                    if has_overlap:
+                        intersection_m[v1, v2] = 1
+                        intersection_m[v2, v1] = 1
+                        overlap_m[v1, v2] = overlap_pct
+                        overlap_m[v2, v1] = overlap_pct
+            return intersection_m, overlap_m
+
+        # Fallback for legacy state without node_introns.
         seg_indices = sorted(
             int(col.split('_')[-1])
             for col in self.nodes_df.columns
@@ -386,17 +468,14 @@ class Gene(object):
         for v1 in range(V):
             for v2 in range(v1 + 1, V):
                 has_overlap = False
-                if has_chrom:
-                    # Different chromosomes never conflict.
-                    if str(self.nodes_df.loc[v1, "chrom"]) != str(self.nodes_df.loc[v2, "chrom"]):
-                        continue
+                if has_chrom and str(self.nodes_df.loc[v1, "chrom"]) != str(self.nodes_df.loc[v2, "chrom"]):
+                    continue
                 if use_segments:
-                    # Check all segment pairs between v1 and v2.
                     for si in seg_indices:
                         s1 = int(self.nodes_df.loc[v1, f"seg_start_{si}"])
                         e1 = int(self.nodes_df.loc[v1, f"seg_end_{si}"])
                         if e1 <= s1:
-                            continue  # padding / no segment
+                            continue
                         for sj in seg_indices:
                             s2 = int(self.nodes_df.loc[v2, f"seg_start_{sj}"])
                             e2 = int(self.nodes_df.loc[v2, f"seg_end_{sj}"])
@@ -404,8 +483,6 @@ class Gene(object):
                                 continue
                             if e1 > s2 and s1 < e2:
                                 has_overlap = True
-                                # Approximate overlap percentage using the
-                                # outermost overlapping segments.
                                 overlap_len = min(e1, e2) - max(s1, s2)
                                 if overlap_len > 0:
                                     denom = ((e2 - s2) + (e1 - s1)) / 2.0
@@ -417,7 +494,6 @@ class Gene(object):
                         if has_overlap:
                             break
                 else:
-                    # Fallback: single-interval representation.
                     s1 = self.nodes_df.loc[v1, 'start']
                     e1 = self.nodes_df.loc[v1, 'end']
                     s2 = self.nodes_df.loc[v2, 'start']
@@ -437,7 +513,7 @@ class Gene(object):
                     intersection_m[v2, v1] = 1
 
         return intersection_m, overlap_m
-    
+
     def get_document(self):  # preprocess_gene_opt
         """Extract all samples information from .junc files."""
 
@@ -464,25 +540,29 @@ class Gene(object):
                 sample_df = pd.read_csv(sample, names=columns, sep='\t', skiprows=1)
                 sample_df = sample_df[['chrom', 'chromStart', 'chromEnd', 'score', 'strand']]
 
-            if sample_df.shape[0] > 0:
+            base, ext = os.path.splitext(sample)
+            has_path_file = os.path.exists(base + ".jxs.tsv")
+            if sample_df.shape[0] > 0 or has_path_file:
                 valid_samples.append(sample)
                 gene_word_dict[self.name][sample] = {}
-                # Preserve chromosome in per-sample aggregation for whole-sample inputs.
-                group_cols = ['chromStart', 'chromEnd']
-                if 'chrom' in sample_df.columns:
-                    group_cols = ['chrom'] + group_cols
-                if 'strand' in sample_df.columns:
-                    group_cols.append('strand')
-                sample_df = sample_df.groupby(group_cols, dropna=False)['score'].sum().reset_index()
 
-                for idx, row in sample_df.iterrows():
-                    start_row = row.chromStart
-                    end_row = row.chromEnd
-                    chrom = str(row.chrom) if 'chrom' in sample_df.columns else ""
-                    key = str(start_row) + '-' + str(end_row)
-                    if getattr(self, "_use_chrom_in_keys", False) and chrom:
-                        key = chrom + ":" + key
-                    gene_word_dict[self.name][sample][key] = row.score
+                if sample_df.shape[0] > 0:
+                    # Preserve chromosome in per-sample aggregation for whole-sample inputs.
+                    group_cols = ['chromStart', 'chromEnd']
+                    if 'chrom' in sample_df.columns:
+                        group_cols = ['chrom'] + group_cols
+                    if 'strand' in sample_df.columns:
+                        group_cols.append('strand')
+                    sample_df = sample_df.groupby(group_cols, dropna=False)['score'].sum().reset_index()
+
+                    for idx, row in sample_df.iterrows():
+                        start_row = row.chromStart
+                        end_row = row.chromEnd
+                        chrom = str(row.chrom) if 'chrom' in sample_df.columns else ""
+                        key = str(start_row) + '-' + str(end_row)
+                        if getattr(self, "_use_chrom_in_keys", False) and chrom:
+                            key = chrom + ":" + key
+                        gene_word_dict[self.name][sample][key] = row.score
         
         # Preserve the per-row sample ordering so we can align additional
         # features (e.g., multi-junction paths) later.
@@ -523,15 +603,15 @@ class Gene(object):
     def is_trainable(self):
         """This function determines if the minimum number of clusters for a gene is less than 2 (trivial case)"""
         # self.samples_df, self.samples_df_dict = self.get_sample_df()
-        if len(self.samples_df) == 0:
+        if self.document is None or self.document.shape[0] == 0 or self.document.shape[1] == 0:
             return False
-        else:
-            # self.nodes_df = self.get_junctions()
-            # self.min_k = find_min_clusters(self.nodes_df)
-            if self.min_k < 2:
-                return False
-            else:
-                return True
+        if np.sum(self.document) <= 0:
+            return False
+        # self.nodes_df = self.get_junctions()
+        # self.min_k = find_min_clusters(self.nodes_df)
+        if self.min_k < 2:
+            return False
+        return True
     
     def preprocess(self):
         """
@@ -843,23 +923,19 @@ class Gene(object):
 
     def _augment_with_long_read_paths(self):
         """
-        Augment the intron-level nodes and document matrix with multi-junction
-        path nodes derived directly from Megadepth --junctions (*.jxs.tsv)
-        outputs. Each path node represents a set of introns observed together
-        in a single multi-junction read or read-pair.
+        Add path tokens for true multi-junction long reads.
 
-        This allows the model to learn directly from long reads, in addition
-        to the per-intron counts from short and long reads encoded in .junc.
+        This implements path-exclusive counting: singleton long reads are already
+        represented by .junc intron counts, while each multi-junction read in
+        .jxs.tsv contributes exactly one path-token count. Path components are
+        parsed directly from the read chain, so a path can be represented even
+        when one of its introns has no singleton-read support.
         """
-        # We require a document matrix and a stable mapping from intron
-        # coordinates ("start-end") to intron indices.
         if getattr(self, "document", None) is None:
             return
         if getattr(self, "sample_files", None) is None:
             return
-        if self.nodes_df is None or self.nodes_df.shape[0] == 0:
-            return
-        if self.w2id_dict is None:
+        if self.nodes_df is None:
             return
 
         from collections import defaultdict
@@ -867,20 +943,26 @@ class Gene(object):
         n_intron = self.nodes_df.shape[0]
         n_samples = self.document.shape[0]
 
-        # Collect path-level counts across all samples:
-        #   path_key (tuple of intron indices) -> {sample_idx: count}
         path_counts_by_sample = defaultdict(lambda: defaultdict(int))
-        # Keep track of which introns make up each path so we can derive
-        # multi-segment intervals per node.
-        path_introns = {}     # path_key -> tuple of intron indices
-        path_intervals = {}   # path_key -> (start, end)
+        path_introns = {}
+        path_intervals = {}
+        path_strands = {}
 
-        # Build a fast view of intron start/end coordinates (single intron nodes).
-        intron_starts = self.nodes_df['start'].to_numpy()
-        intron_ends = self.nodes_df['end'].to_numpy()
+        def parse_intron_token(chrom, token):
+            token = str(token).strip()
+            if not token or "-" not in token:
+                return None
+            left, right = token.split("-", 1)
+            try:
+                start = int(left)
+                end = int(right)
+            except ValueError:
+                return None
+            if end < start:
+                start, end = end, start
+            return (str(chrom or ""), start, end)
 
         for sample_idx, junc_path in enumerate(self.sample_files):
-            # Derive the corresponding .jxs.tsv path from the .junc filename.
             base, ext = os.path.splitext(junc_path)
             jxs_path = base + ".jxs.tsv"
             if not os.path.exists(jxs_path):
@@ -895,68 +977,51 @@ class Gene(object):
                         fields = line.split("\t")
                         if len(fields) < 6:
                             continue
-                        # Megadepth --junctions output may include 1 mate (6-7 fields)
-                        # or 2 mates (14 fields). Each mate has its own chromosome.
+
                         coord_parts = [(fields[0], fields[5])]
                         if len(fields) > 12:
                             coord_parts.append((fields[7], fields[12]))
-                        # If mates disagree on chromosome, treat as chimeric and ignore.
                         if len(coord_parts) > 1 and coord_parts[0][0] != coord_parts[1][0]:
                             continue
 
-                        intron_idx_set = set()
+                        ordered_introns = []
+                        seen = set()
                         for chrom, cstr in coord_parts:
                             if not cstr:
                                 continue
                             for tok in cstr.split(","):
-                                tok = tok.strip()
-                                if not tok:
+                                intron = parse_intron_token(chrom, tok)
+                                if intron is None or intron in seen:
                                     continue
-                                # Megadepth emits "start-end" 1-based coordinates;
-                                # these match the keys we use in w2id_dict for introns.
-                                key = tok
-                                if getattr(self, "_use_chrom_in_keys", False):
-                                    key = f"{chrom}:{tok}"
-                                if key in self.w2id_dict:
-                                    intron_idx_set.add(self.w2id_dict[key])
+                                ordered_introns.append(intron)
+                                seen.add(intron)
 
-                        if len(intron_idx_set) < 2:
-                            # We only create path nodes for true multi-junction reads.
+                        if len(ordered_introns) < 2:
                             continue
-                        # Use a sorted tuple of intron indices as a key; the
-                        # order of introns within the path does not affect the
-                        # independent-set constraint, but the set of introns
-                        # does.
-                        path_key = tuple(sorted(intron_idx_set))
 
-                        # Cache the intron membership and union interval for this path.
+                        path_key = tuple(ordered_introns)
                         if path_key not in path_introns:
                             path_introns[path_key] = path_key
-                            idxs = np.array(path_key, dtype=int)
-                            s_path = int(intron_starts[idxs].min())
-                            e_path = int(intron_ends[idxs].max())
-                            path_intervals[path_key] = (s_path, e_path)
+                            starts = [intron[1] for intron in path_key]
+                            ends = [intron[2] for intron in path_key]
+                            path_intervals[path_key] = (int(min(starts)), int(max(ends)))
+                            path_strands[path_key] = fields[2] if len(fields) > 2 else "."
 
                         path_counts_by_sample[path_key][sample_idx] += 1
             except OSError:
                 continue
 
         if not path_intervals:
-            # No multi-junction paths observed; nothing to augment.
             return
 
-        # Assign new node indices to each unique path.
-        path_keys = sorted(path_introns.keys())
+        path_keys = sorted(path_introns.keys(), key=lambda key: (key[0][0], key[0][1], key[-1][2], key))
         n_paths = len(path_keys)
         if n_paths == 0:
             return
 
-        # Determine the maximum number of segments in any path so that we can
-        # allocate a fixed set of segment columns on nodes_df.
         max_segments = max(len(path_introns[k]) for k in path_keys)
         max_segments = max(1, max_segments)
 
-        # Ensure intron nodes have segment columns (degenerate single segment).
         for seg_idx in range(1, max_segments + 1):
             s_col = f"seg_start_{seg_idx}"
             e_col = f"seg_end_{seg_idx}"
@@ -972,7 +1037,6 @@ class Gene(object):
                 self.nodes_df.loc[row_idx, f"seg_start_{seg_idx}"] = 0
                 self.nodes_df.loc[row_idx, f"seg_end_{seg_idx}"] = 0
 
-        # Extend nodes_df with new path nodes, including segment columns.
         add_columns = ['start', 'length', 'end', 'graph_labels', 'node_labels']
         if 'chrom' in self.nodes_df.columns:
             add_columns = ['chrom'] + add_columns
@@ -981,7 +1045,7 @@ class Gene(object):
         seg_columns = [f"seg_start_{i}" for i in range(1, max_segments + 1)] + \
                       [f"seg_end_{i}" for i in range(1, max_segments + 1)]
         all_cols = add_columns + seg_columns
-        # Use object dtype for chrom/labels columns; int for numeric fields.
+
         add_df = pd.DataFrame(columns=all_cols)
         for col in all_cols:
             if col in ("chrom", "graph_labels", "node_labels", "strand"):
@@ -993,72 +1057,49 @@ class Gene(object):
         node_labels = []
         for offset, path_key in enumerate(path_keys):
             idx = n_intron + offset
-            intron_idxs = np.array(path_introns[path_key], dtype=int)
+            components = path_introns[path_key]
             s_path, e_path = path_intervals[path_key]
+            chrom = str(components[0][0])
             if 'chrom' in self.nodes_df.columns:
-                # Path is built from introns within the same read; assume single chrom.
-                add_df.loc[offset, 'chrom'] = str(self.nodes_df.loc[int(intron_idxs[0]), 'chrom'])
+                add_df.loc[offset, 'chrom'] = chrom
             add_df.loc[offset, 'start'] = s_path
             add_df.loc[offset, 'end'] = e_path
             add_df.loc[offset, 'length'] = e_path - s_path
             if 'strand' in self.nodes_df.columns:
-                add_df.loc[offset, 'strand'] = str(self.nodes_df.loc[int(intron_idxs[0]), 'strand'])
+                add_df.loc[offset, 'strand'] = str(path_strands.get(path_key, "."))
 
-            # Fill segment coordinates sorted by genomic start.
-            order = np.argsort(intron_starts[intron_idxs])
-            ordered_idxs = intron_idxs[order]
-            for seg_pos, intr_idx in enumerate(ordered_idxs):
-                s = int(intron_starts[intr_idx])
-                e = int(intron_ends[intr_idx])
-                add_df.loc[offset, f"seg_start_{seg_pos + 1}"] = s
-                add_df.loc[offset, f"seg_end_{seg_pos + 1}"] = e
-            # Remaining segments (if any) remain as zeros (padding).
+            for seg_pos, (_, s, e) in enumerate(components):
+                add_df.loc[offset, f"seg_start_{seg_pos + 1}"] = int(s)
+                add_df.loc[offset, f"seg_end_{seg_pos + 1}"] = int(e)
 
-            if 'chrom' in self.nodes_df.columns:
-                chrom = str(add_df.loc[offset, 'chrom'])
-                graph_labels.append(f"{chrom}:{s_path}_{e_path}")
-            else:
-                graph_labels.append(f"{s_path}_{e_path}")
+            label = ",".join(f"{s}-{e}" for _, s, e in components)
+            if 'chrom' in self.nodes_df.columns and chrom:
+                label = f"{chrom}:{label}"
+            graph_labels.append(label)
             node_labels.append(str(idx))
         add_df['graph_labels'] = graph_labels
         add_df['node_labels'] = node_labels
 
-        # Concatenate intron and path nodes; reset indices.
         self.nodes_df = pd.concat([self.nodes_df, add_df], axis=0, ignore_index=True)
 
-        # Extend the document matrix with per-sample path counts.
         doc_aug = np.zeros((n_samples, n_intron + n_paths), dtype=np.int32)
         doc_aug[:, :n_intron] = self.document
         for path_idx, path_key in enumerate(path_keys):
             col = n_intron + path_idx
-            counts_for_path = path_counts_by_sample[path_key]
-            for sample_idx, cnt in counts_for_path.items():
+            for sample_idx, cnt in path_counts_by_sample[path_key].items():
                 if 0 <= sample_idx < n_samples:
                     doc_aug[sample_idx, col] = int(cnt)
         self.document = doc_aug
 
-        # Extend id2w_dict for interpretability; keep w2id_dict focused on
-        # intron nodes so that Megadepth tokens ("start-end") continue to map
-        # only to intron indices. For path nodes we store the union interval
-        # as "start-end" so downstream utilities remain compatible.
-        if self.id2w_dict is None:
-            self.id2w_dict = {}
-        for path_idx, path_key in enumerate(path_keys):
-            idx = n_intron + path_idx
-            s_path, e_path = path_intervals[path_key]
-            if getattr(self, "_use_chrom_in_keys", False) and 'chrom' in self.nodes_df.columns:
-                chrom = str(self.nodes_df.loc[int(path_introns[path_key][0]), 'chrom'])
-                self.id2w_dict[idx] = f"{chrom}:{s_path}-{e_path}"
-            else:
-                self.id2w_dict[idx] = f"{s_path}-{e_path}"
-
         if not self.node_introns:
-            self._seed_base_node_introns()
+            base_introns = []
+            for row_idx in range(n_intron):
+                chrom = str(self.nodes_df.loc[row_idx, "chrom"]) if "chrom" in self.nodes_df.columns else ""
+                start = int(self.nodes_df.loc[row_idx, "start"])
+                end = int(self.nodes_df.loc[row_idx, "end"])
+                base_introns.append(((chrom, start, end),))
+            self.node_introns = base_introns
         for path_key in path_keys:
-            ordered_introns = []
-            for intr_idx in np.argsort(intron_starts[np.array(path_introns[path_key], dtype=int)]):
-                base_idx = int(np.array(path_introns[path_key], dtype=int)[intr_idx])
-                intr_chain = self.node_introns[base_idx] if base_idx < len(self.node_introns) else ()
-                if intr_chain:
-                    ordered_introns.append(intr_chain[0])
-            self.node_introns.append(tuple(ordered_introns))
+            self.node_introns.append(tuple(path_introns[path_key]))
+
+        self._rebuild_token_maps()
