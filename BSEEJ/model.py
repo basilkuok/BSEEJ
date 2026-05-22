@@ -1,10 +1,26 @@
 import time
 
-from scipy.special import gammaln, xlogy
+from scipy.special import gammaln, xlogy, psi
+from scipy.special import expit
 from scipy.stats import beta as sci_beta
 from scipy.stats import dirichlet, multinomial
+import numpy as np
+import bisect
+import os
+from copy import deepcopy
+from typing import Tuple
+
+# Check what does score in the junc.file mean, Professor think it is the number of reads that express that junction in the input file
+# Check the preprocessing in BAM file
+
 
 from utilities import *
+from utilities import find_initial_nodes, split_training_test, generalized_min_node_cover
+import utilities
+from utilities import save_results, compute_df
+
+
+_eps = 1e-12
 
 
 class Model(object):
@@ -12,6 +28,11 @@ class Model(object):
     def __init__(self, eta, alpha, epsilon, r, s):
         self.eta = eta
         self.alpha = alpha
+        self.eta_prior = eta
+        self.alpha_prior = alpha
+        # Strength of long-read co-occurrence prior (0 disables it)
+        self.cooc_strength = 0.0
+        self.cooc_matrix = None
         self.epsilon = epsilon
         self.r = r
         self.s = s
@@ -1238,13 +1259,14 @@ class Model(object):
         self.run_info['convergence_checkpoint_interval'] = convergence_checkpoint_interval
         self.run_info['n_iter'] = n_iter
         self.run_info['convergence_point'] = n_iter
-        self.run_info['document'] = gene.document
+        self.run_info['document'] = gene.document      #####
         self.run_info['document_tr'] = gene.document_tr
         self.run_info['document_te'] = gene.document_te
         self.run_info['tr_idx'] = gene.training_idx
         self.run_info['te_idx'] = gene.test_idx
-    
-    def log_likelihood(self):
+        self.run_info['idx_suffix'] = self.idx_suffix
+
+    def log_likelihood_gibbs(self):
         """Computes log likelihood at the end of each Gibbs iteration"""
         n_d = self.z.shape[0]
         n_v = self.z.shape[1]
@@ -1268,8 +1290,8 @@ class Model(object):
                                                                       axis=-1)
         likelihood = np.sum(multinomial_pmf)
         return likelihood
-    
-    def log_likelihood_te(self, document_te):
+
+    def log_likelihood_te_gibbs(self, document_te):
         """Computes log likelihood of test"""
         n_k = self.run_info['N_K']
         likelihood_te = 0
