@@ -1247,6 +1247,11 @@ class Model(object):
         self.run_info['eta'] = self.eta
         self.run_info['epsilon'] = self.epsilon
         self.run_info['min_k'] = gene.min_k
+        self.run_info['variant'] = getattr(gene, 'variant', 'current')
+        self.run_info['reference_k'] = getattr(gene, 'reference_k', None)
+        self.run_info['effective_k'] = getattr(gene, 'effective_k', n_k)
+        self.run_info['annotation_path'] = getattr(gene, 'annotation_path', '')
+        self.run_info['novel_m'] = getattr(gene, 'novel_m', None)
         self.run_info['samples_df'] = gene.samples_df
         self.run_info['gene'] = gene.name
         self.run_info['gene_intersection'] = gene.intersection
@@ -1326,7 +1331,7 @@ class Model(object):
                 for k in range(0, self.run_info['N_K']):
                     self.z[doc, v, k] = np.count_nonzero(tempz == k)
 
-    def update_theta(self):
+    def update_theta_gibbs(self):
         """Update \theta variable in the model"""
     
         # Sample from full conditional of Theta
@@ -1334,7 +1339,7 @@ class Model(object):
             self.theta[doc, :] = np.random.dirichlet(self.alpha + np.sum(self.z[doc, :, :], axis=0))
         self.theta[self.theta < self.epsilon] = self.epsilon
 
-    def update_pi(self):
+    def update_pi_gibbs(self):
         """Update \pi variable in the model"""
     
         # update for pi
@@ -1439,13 +1444,14 @@ class Model(object):
             likelihood.append(runs_dict[i]['likelihood_i'])
         return likelihood
 
-    def train(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
+    def train_gibbs(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
         """Run Gibbs sampling on the data"""
     
         self.initialize_vars(gene, n_k)
         self.make_run_info(gene, n_k, burn_in, convergence_checkpoint_interval, n_iter)
         self.run_info['gibbs'] = {}
-    
+        self.run_info['inference'] = 'gibbs'
+
         startiter = time.time()
         it = 0
         while it <= min(self.run_info['convergence_point'] + 100, n_iter):
