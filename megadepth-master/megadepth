@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#get this script's path
+p=$(dirname $0)
+
+export LD_LIBRARY_PATH=$p/libBigWig:$p/htslib:$LD_LIBRARY_PATH
+$p/megadepth_release "$@"

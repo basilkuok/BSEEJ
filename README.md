@@ -67,6 +67,12 @@ python3 bseej.py -g A2ML1 -p ./A2ML1 -o ./results -k 1 -i 1000 -e 0.01 -a 1 -r 1
 > **Note**: The junction path must contain `.junc` files (e.g., the unzipped `A2ML1` folder).  
 > The output directory will be created if it does not exist.
 
+**Long-read BAM preprocessing:** `build_junctions_from_bam.py` uses path-exclusive counting.
+Single-junction reads are written to `.junc` as intron-token counts, while reads
+with two or more junctions are written to `.jxs.tsv` as one multi-junction path
+token. The same read is therefore not counted both as individual introns and as
+a path observation.
+
 ---
 
 ## Usage
