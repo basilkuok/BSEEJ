@@ -1343,8 +1343,8 @@ class Model(object):
             self.pi[k] = np.random.beta(self.r + m[k], self.s + self.run_info['N_V'] - m[k], size=None)
             # pi[k] = np.random.beta(r + np.sum(Z_matrix[:, :, k]), s + np.sum(document) -
             # np.sum(Z_matrix[:, :, k]), size=None)
-    
-    def update_b(self):
+
+    def update_b_gibbs(self):
         """Update b variable in the model"""
         n_s = 10
         if not self.converged:
@@ -1385,14 +1385,14 @@ class Model(object):
                 temp[new_cluster] = 1
                 self.b[k, :] = deepcopy(temp)
 
-    def update_beta(self):
+    def update_beta_gibbs(self):
         """Update \beta variable in the model"""
     
         # Sample from full conditional of Beta
         # Z_matrix[:, v, k] counts the number of times word v is assigned to cluster k throughout the whole corpus
         for k in range(self.run_info['N_K']):
             temp_b = np.array([v + self.epsilon if v == 0 else v for v in list(self.b[k, :])])
-            self.beta[k, :] = np.random.dirichlet(temp_b * self.eta + np.sum(self.z[:, :, k], axis=0))
+            prior_vec = temp_b * self.eta
 
             # Optional long-read co-occurrence prior: bias the Dirichlet
             # concentration for β_k so that introns that co-occur with the
@@ -1415,8 +1415,8 @@ class Model(object):
         self.run_info['gibbs'][t]['b'] = deepcopy(self.b)
         self.run_info['gibbs'][t]['error'] = np.sum(np.abs(self.z - self.z_init)) / (
                 self.run_info['N_D'] * self.run_info['N_W'])
-        self.run_info['gibbs'][t]['likelihood_i'] = self.log_likelihood()
-        self.run_info['gibbs'][t]['likelihood_te'] = self.log_likelihood_te(gg.document_te)
+        self.run_info['gibbs'][t]['likelihood_i'] = self.log_likelihood_gibbs()
+        self.run_info['gibbs'][t]['likelihood_te'] = self.log_likelihood_te_gibbs(gg.document_te)
     
         if t == 0:
             self.run_info['gibbs'][t]['relative_error'] = np.sum(np.abs(self.z - self.z_init)) / (
@@ -1452,7 +1452,7 @@ class Model(object):
         
             self.run_info['gibbs'][it] = {}
             
-            self.update_z()
+            self.update_z_gibbs()
             
             self.update_theta()
             
@@ -1460,13 +1460,13 @@ class Model(object):
             
             self.update_b()
             
-            self.update_beta()
+            self.update_beta_gibbs()
             
             self.update_run_info(it, gene, burn_in)
             
             if it >= burn_in and it % convergence_checkpoint_interval == 0 and not self.converged:
     
-                log_likelihood_vector = self.get_log_likelihood_vec()
+                log_likelihood_vector = self.get_log_likelihood_vec_gibbs()
                 self.converged = is_converged_fwsr(log_likelihood_vector, threshold=0.005)
                 
                 if self.converged:
