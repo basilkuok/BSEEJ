@@ -46,16 +46,26 @@ class Gene(object):
         # self.min_k = None
 
     def get_sample_df(self):
-        """computes the gene's intro excisions from .bam files."""
-        min_coverage = 30
-        # junc_files_list = os.listdir(self.junc_path)
-        # samples_list = [s for s in junc_files_list if self.name + '_' in s and '.junc' in s]
-        samples_list = [os.path.join(self.junc_path, s) for s in os.listdir(self.junc_path) if '.junc' in s]
+        """Compute the gene's intron excisions from .junc files."""
+        # Deterministic ordering is important because downstream outputs use
+        # integer sample IDs (row indices). Sort by filename so multi-sample
+        # runs are reproducible across OS/filesystems.
+        samples_list = [
+            os.path.join(self.junc_path, s)
+            for s in sorted(os.listdir(self.junc_path))
+            if s.endswith('.junc')
+        ]
+        if not samples_list:
+            # No samples available.
+            empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+            return empty, {}
         columns = ['chrom', 'chromStart', 'chromEnd', 'junc_id', 'score', 'strand', 'start', 'end', 'f1', 'f2', 'f3',
                    'f4']
         samples_dfs = [pd.read_csv(f, sep='\t', names=columns, skiprows=1) for f in samples_list]
-        samples_df = pd.concat(samples_dfs)
-        samples_df = samples_df[samples_df['score'] >= min_coverage].reset_index(drop=True)
+        if not samples_dfs:
+            empty = pd.DataFrame(columns=["chrom", "chromStart", "chromEnd", "score", "strand"])
+            return empty, {}
+        samples_df = pd.concat(samples_dfs, ignore_index=True)
         # samples = []
         # for sample in samples_list:
         #     if '.gz' in sample:
