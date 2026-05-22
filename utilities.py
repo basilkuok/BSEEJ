@@ -13,6 +13,222 @@ import pandas as pd
 from numba import jit
 
 
+def _detect_clisat_binary():
+    """
+    Locate a usable CliSAT binary, if available.
+
+    Search order:
+      1) Environment variable CLISAT_BIN
+      2) Repository-local CliSAT/bin/CliSAT_2024_07_06
+      3) Repository-local CliSAT/bin/CliSAT_2024_07_06_ub16.04
+
+    Returns
+    -------
+    str or None
+        Absolute path to the CliSAT binary, or None if not found / not executable.
+    """
+    # Explicit override via environment variable.
+    env_bin = os.environ.get("CLISAT_BIN")
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return env_bin
+
+    # Try repo-local binaries (only valid on Linux).
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        here = os.getcwd()
+    root_dir = os.path.dirname(here)
+    candidate_dirs = [
+        os.path.join(here, "CliSAT", "bin"),       # CliSAT inside JARVIS_final
+        os.path.join(root_dir, "CliSAT", "bin"),   # CliSAT beside JARVIS_final
+    ]
+    for clisat_dir in candidate_dirs:
+        candidates = [
+            os.path.join(clisat_dir, "CliSAT_2024_07_06"),
+            os.path.join(clisat_dir, "CliSAT_2024_07_06_ub16.04"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
+def _run_clisat_max_clique(n_vertices, edges, time_limit=None, ordering=2, heuristic=1):
+    """
+    Call the CliSAT binary on a graph given by a vertex count and edge list.
+
+    Parameters
+    ----------
+    n_vertices : int
+        Number of vertices (labeled 0 .. n_vertices-1).
+    edges : iterable of (int, int)
+        Undirected edges with 0-based endpoints.
+    time_limit : int or None
+        Time limit in seconds. If None, a default of 3600 is used.
+    ordering : int
+        CliSAT vertex ordering parameter (1 = DEG-SORT, 2 = COLOR-SORT).
+    heuristic : int
+        CliSAT heuristic parameter (0 = none, 1 = AMTS 0.05 s).
+
+    Returns
+    -------
+    (int, list[int]) or (None, None)
+        Tuple (omega, clique_vertices) on success, where clique_vertices are 0-based.
+        Returns (None, None) if CliSAT is not available or the call fails.
+    """
+    clisat_bin = _detect_clisat_binary()
+    if clisat_bin is None:
+        raise RuntimeError(
+            "CliSAT binary not found. Please clone the CliSAT repository under "
+            "'BSEEJ_final/CliSAT', ensure an executable binary exists in "
+            "'CliSAT/bin' (e.g., CliSAT_2024_07_06), or set CLISAT_BIN to the "
+            "full path of the CliSAT executable."
+        )
+
+    if time_limit is None:
+        # Allow user to override via environment; fall back to 3600 s.
+        try:
+            time_limit = int(os.environ.get("CLISAT_TIMELIMIT", "3600"))
+        except ValueError:
+            time_limit = 3600
+
+    # Prepare a temporary DIMACS .clq file.
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".clq", delete=False) as tmp:
+            tmp_path = tmp.name
+            # Minimal DIMACS format: p edge n m followed by undirected edges.
+            m_edges = len(edges)
+            tmp.write(f"p edge {n_vertices} {m_edges}\n")
+            for u, v in edges:
+                # DIMACS vertices are 1-based.
+                tmp.write(f"e {u + 1} {v + 1}\n")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to create temporary DIMACS file for CliSAT: {exc}")
+
+    try:
+        cmd = [
+            clisat_bin,
+            tmp_path,
+            str(int(time_limit)),
+            str(int(ordering)),
+            str(int(heuristic)),
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    # Optional debug: dump command and a snippet of CliSAT output
+    if os.environ.get("CLISAT_DEBUG", "").strip():
+        print("[CliSAT DEBUG] Command:", " ".join(cmd))
+        print("[CliSAT DEBUG] Exit code:", result.returncode)
+        print("[CliSAT DEBUG] Stdout (first 40 lines):")
+        for i, line in enumerate(result.stdout.splitlines()):
+            if i >= 40:
+                break
+            print(line)
+        if result.stderr.strip():
+            print("[CliSAT DEBUG] Stderr:", result.stderr.strip())
+
+    if result.returncode != 0 or not result.stdout:
+        raise RuntimeError(
+            f"CliSAT failed with exit code {result.returncode}. "
+            f"Stderr: {result.stderr.strip()}"
+        )
+
+    # Robust parsing of CliSAT output. Different builds may emit either
+    #   omega:K
+    # or
+    #   w:K ...
+    # (sometimes both, e.g. incumbent + final optimum), and usually a final
+    # line of the form:
+    #   v1 v2 ... vK  [K]
+    # where v_i are 1-based vertex IDs and the bracketed K repeats the clique
+    # size.  We treat the *last* reported w/omega as the true optimum and the
+    # last such bracketed line as the explicit clique.
+    import re
+
+    text = result.stdout
+    omega = None
+    clique_vertices = None
+
+    # 1) Primary path: scan from the bottom for a line of the form
+    #       v1 v2 ... vK [K]
+    #    and extract the vertex IDs and K from that line only.  This avoids
+    #    accidentally mixing integers from multiple lines.
+    lines = text.splitlines()
+    for raw in reversed(lines):
+        line = raw.strip()
+        if "[" not in line or "]" not in line:
+            continue
+        try:
+            # Split on the last '[' and take the numeric content up to ']'.
+            prefix, bracket = line.rsplit("[", 1)
+            inside = bracket.split("]", 1)[0]
+            nums_inside = re.findall(r"\d+", inside)
+            if not nums_inside:
+                continue
+            k = int(nums_inside[-1])
+        except Exception:
+            continue
+
+        # Integers before '[' are interpreted as vertex IDs (1‑based).
+        tokens_all = re.findall(r"\d+", prefix)
+        if not tokens_all:
+            continue
+        try:
+            verts = [int(t) - 1 for t in tokens_all]
+        except Exception:
+            continue
+
+        # If there are more integers than K (for any reason), take the last K.
+        if len(verts) >= k:
+            clique_vertices = verts[-k:]
+        else:
+            clique_vertices = verts
+        omega = k
+        break
+
+    # 2) If, for some reason, we did not see such a bracketed clique line, fall
+    #    back to parsing the last reported 'omega:K' or 'w:K' from the whole
+    #    CliSAT output.  In that case we may not have the explicit vertex set.
+    if omega is None:
+        omega_matches = re.findall(r"omega\s*[:=]\s*(\d+)", text)
+        w_matches = re.findall(r"w\s*[:=]\s*(\d+)", text)
+        try:
+            if omega_matches:
+                omega = int(omega_matches[-1])
+            elif w_matches:
+                omega = int(w_matches[-1])
+        except ValueError:
+            omega = None
+
+    # Extra debug: report what we parsed from CliSAT.
+    if os.environ.get("CLISAT_DEBUG", "").strip():
+        print(f"[CliSAT DEBUG] Parsed omega: {omega}")
+        if clique_vertices is not None:
+            print(f"[CliSAT DEBUG] Parsed clique size: {len(clique_vertices)}")
+        else:
+            print("[CliSAT DEBUG] No clique vertices parsed.")
+
+    if omega is None:
+        raise RuntimeError(
+            "CliSAT did not report a clique size (omega/w). "
+            "Please inspect the CliSAT output and configuration."
+        )
+    if clique_vertices is None:
+        clique_vertices = []
+    return omega, clique_vertices
+
+
 def compute_df(n_sample, effective_k, n_introns, result_df, gene_name, z_matrix, starts, ends):
     counter = 0
     for sample_id in range(n_sample):
@@ -107,21 +323,54 @@ def find_min_clusters(nodes_df):
 
 
 def get_conflict_for_plot(nodes_df):
-    """Find the intervals that have intersection"""
-    intersection_m = np.zeros([nodes_df.shape[0], nodes_df.shape[0]], dtype=np.int32)
+    """Find the intervals that have intersection.
+
+    When per-node segment columns (seg_start_i/seg_end_i) are present, treat
+    each node as a union of segments and declare a conflict when any pair of
+    segments overlaps. Otherwise, fall back to a single-interval check.
+    """
+    V = nodes_df.shape[0]
+    intersection_m = np.zeros([V, V], dtype=np.int32)
     edges_list = []
-    for v1 in range(nodes_df.shape[0]):
-        s1 = nodes_df.loc[v1, 'start']
-        e1 = nodes_df.loc[v1, 'end']
-        for v2 in range(v1 + 1, nodes_df.shape[0]):
-            s2 = nodes_df.loc[v2, 'start']
-            e2 = nodes_df.loc[v2, 'end']
-            if e1 > s2 and s1 < e2:
+
+    seg_indices = sorted(
+        int(col.split('_')[-1])
+        for col in nodes_df.columns
+        if col.startswith('seg_start_')
+    )
+    use_segments = len(seg_indices) > 0
+
+    for v1 in range(V):
+        for v2 in range(v1 + 1, V):
+            has_overlap = False
+            if use_segments:
+                for si in seg_indices:
+                    s1 = int(nodes_df.loc[v1, f"seg_start_{si}"])
+                    e1 = int(nodes_df.loc[v1, f"seg_end_{si}"])
+                    if e1 <= s1:
+                        continue
+                    for sj in seg_indices:
+                        s2 = int(nodes_df.loc[v2, f"seg_start_{sj}"])
+                        e2 = int(nodes_df.loc[v2, f"seg_end_{sj}"])
+                        if e2 <= s2:
+                            continue
+                        if e1 > s2 and s1 < e2:
+                            has_overlap = True
+                            break
+                    if has_overlap:
+                        break
+            else:
+                s1 = nodes_df.loc[v1, 'start']
+                e1 = nodes_df.loc[v1, 'end']
+                s2 = nodes_df.loc[v2, 'start']
+                e2 = nodes_df.loc[v2, 'end']
+                if e1 > s2 and s1 < e2:
+                    has_overlap = True
+
+            if has_overlap:
                 intersection_m[v1, v2] = 1
                 intersection_m[v2, v1] = 1
                 edges_list.append((v1, v2))
-    return intersection_m, edges_list
-
 
 def generate_interval_graph_nx(nodes_df, edges_list, intervalviz=True):
     """Generate the graph G=(V,E) using networkx library and visualize"""
