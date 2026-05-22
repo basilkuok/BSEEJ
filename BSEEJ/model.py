@@ -30,6 +30,9 @@ class Model(object):
         self.alpha = alpha
         self.eta_prior = eta
         self.alpha_prior = alpha
+        # Strength of long-read co-occurrence prior (0 disables it)
+        self.cooc_strength = 0.0
+        self.cooc_matrix = None
         self.epsilon = epsilon
         self.r = r
         self.s = s
@@ -69,64 +72,6 @@ class Model(object):
         self.b_stepsize = 0.3
         self.beta_stepsize = 0.5
         self.idx_suffix = idx_suffix or ""
-
-    def _rho(self) -> np.ndarray:
-        """
-        Return variational Bernoulli means E[b] clipped to their valid range.
-        """
-        if self.b_probs is None:
-            raise RuntimeError("b_probs must be initialized before structural updates.")
-        return np.clip(np.asarray(self.b_probs, dtype=float), 0.0, 1.0)
-
-    def _beta_support_from_rho(self, rho=None) -> np.ndarray:
-        """
-        Epsilon-relaxed beta support used by the Gibbs reference model:
-        support = epsilon + (1 - epsilon) * E[b].
-        """
-        if rho is None:
-            rho = self._rho()
-        eps = max(float(self.epsilon), _eps)
-        return eps + (1.0 - eps) * np.clip(np.asarray(rho, dtype=float), 0.0, 1.0)
-
-    def _expected_log_beta(self) -> np.ndarray:
-        zeta = np.maximum(np.asarray(self.zeta, dtype=float), max(float(self.epsilon), _eps))
-        return psi(zeta) - psi(np.sum(zeta, axis=1))[:, None]
-
-    def _structural_logits(self) -> np.ndarray:
-        """
-        Approximate CAVI/SVI logits for q(b) under the epsilon-relaxed beta prior.
-
-        This separates rho = E[b] from the beta Dirichlet support weight
-        epsilon + (1 - epsilon) * rho.
-        """
-        rho = self._rho()
-        eps = max(float(self.epsilon), _eps)
-        eta0 = np.asarray(self.eta0, dtype=float)
-        if eta0.ndim == 0:
-            eta0 = np.full(rho.shape[1], float(eta0))
-        eta0 = np.maximum(eta0, eps)
-
-        support = self._beta_support_from_rho(rho)
-        eta_support = support * eta0[None, :]
-        total = np.sum(eta_support, axis=1, keepdims=True)
-        others = total - eta_support
-
-        eta_v = eta0[None, :]
-        a1 = np.maximum(others + eta_v, eps)
-        a0 = np.maximum(others + eps * eta_v, eps)
-        e_log_beta = self._expected_log_beta()
-
-        delta_beta = (
-            gammaln(a1)
-            - gammaln(a0)
-            - gammaln(eta_v)
-            + gammaln(eps * eta_v)
-            + (1.0 - eps) * eta_v * e_log_beta
-        )
-
-        e_log_pi = psi(self.pi_a)[:, None] - psi(self.pi_a + self.pi_b)[:, None]
-        e_log_not_pi = psi(self.pi_b)[:, None] - psi(self.pi_a + self.pi_b)[:, None]
-        return (e_log_pi - e_log_not_pi) + delta_beta
 
     def _precompute_interval_dp_structs(self, starts: np.ndarray, ends: np.ndarray):
         """
@@ -362,20 +307,17 @@ class Model(object):
                 b[k, idx] = 1
         self.b = b
 
-        # beta ~ Dirichlet(eta * [epsilon + (1 - epsilon) * b])
-        eta_dir = np.asarray(self.eta0, dtype=float)
-        if eta_dir.ndim == 0:
-            eta_dir = np.full(V, float(eta_dir))
-        elif eta_dir.size != V:
-            eta_dir = np.resize(eta_dir, V)
-        eta_dir = np.maximum(eta_dir, max(float(self.epsilon), _eps))
-        beta_support = self._beta_support_from_rho(b.astype(float))
+        # beta ~ Dirichlet(eta)
+        if np.ndim(self.eta_prior) == 0:
+            eta_dir = np.full(V, float(self.eta_prior))
+        else:
+            eta_vec = np.array(self.eta_prior, dtype=float)
+            eta_dir = eta_vec if eta_vec.size == V else np.resize(eta_vec, V)
         beta = np.zeros((n_k, V))
         for k in range(n_k):
             temp_dirb = np.array([np.nan])
-            alpha_k = np.maximum(eta_dir * beta_support[k], max(float(self.epsilon), _eps))
             while np.isnan(np.sum(temp_dirb)):
-                temp_dirb = np.random.dirichlet(alpha_k)
+                temp_dirb = np.random.dirichlet(eta_dir)
             beta[k] = temp_dirb
         beta[beta < self.epsilon] = self.epsilon
         self.beta = beta
@@ -398,7 +340,7 @@ class Model(object):
         counts_theta = np.einsum('dv,dvk->dk', doc, phi)
         self.gamma = counts_theta + self.alpha_vec[np.newaxis, :]
 
-        self.b_probs = b.astype(float)
+        self.b_probs = np.where(b == 1, 1.0 - self.epsilon, self.epsilon).astype(float)
         self.b_mask = b.astype(bool)
         self._mask_ready = True
 
@@ -408,7 +350,7 @@ class Model(object):
         self.pi_b = np.maximum(self.pi_b, self.epsilon)
 
         counts_beta = np.einsum('dv,dvk->kv', doc, phi)
-        self.zeta = self.eta0[None, :] * self._beta_support_from_rho() + counts_beta
+        self.zeta = self.eta0[None, :] * self.b_probs + counts_beta
         self.zeta = np.maximum(self.zeta, self.epsilon)
 
     
@@ -474,7 +416,7 @@ class Model(object):
         phi   = self.phi                    # (D, V, K)
         a     = self.pi_a                   # (K,)
         b_    = self.pi_b                   # (K,)
-        rho   = self._rho()                 # (K, V), E[b]
+        eta   = self.b_probs                # (K, V)
         zeta  = self.zeta                   # (K, V)
         alpha = self.alpha_vec              # (K,)
         eta0  = self.eta0                   # (V,)
@@ -500,13 +442,13 @@ class Model(object):
                      + (s-1)*(psi(b_)-psi(a+b_)) )
 
         # 4) E_q[ log p(b | π) ]
-        term += np.sum( rho*(psi(a)[:,None]-psi(a+b_)[:,None])
-                     + (1-rho)*(psi(b_)[:,None]-psi(a+b_)[:,None]) )
+        term += np.sum( eta*(psi(a)[:,None]-psi(a+b_)[:,None])
+                     + (1-eta)*(psi(b_)[:,None]-psi(a+b_)[:,None]) )
 
         # 5) E_q[ log p(β | η⁰ ⊙ b) ]
         eta0_mask = self.eta0[None, :]                  # (1,V)
-        beta_support = self._beta_support_from_rho(rho)
-        eta_tilde = np.clip(eta0_mask * beta_support, self.epsilon, None)  # (K,V)
+        eta_expect = self.b_probs                      # (K,V)
+        eta_tilde = np.clip(eta0_mask * eta_expect, self.epsilon, None)  # (K,V)
         term += np.sum(
             gammaln(np.sum(eta_tilde, axis=1)) - np.sum(gammaln(eta_tilde), axis=1)
         )
@@ -532,7 +474,7 @@ class Model(object):
         )
 
         # d) −E_q[ log q(b) ]
-        term -= np.sum( rho*np.log(rho + _eps) + (1-rho)*np.log(1-rho + _eps) )
+        term -= np.sum( eta*np.log(eta + _eps) + (1-eta)*np.log(1-eta + _eps) )
 
         # e) −E_q[ log q(β) ]
         term -= np.sum( gammaln(np.sum(zeta,axis=1))
@@ -620,10 +562,9 @@ class Model(object):
           a_k     = r + sum_v ζ_{k,v},
         b'_k    = s + V - sum_v ζ_{k,v}.
         """
-        rho = self._rho()
-        K, V = rho.shape
-        self.pi_a = self.r + np.sum(rho, axis=1)       # (K,)
-        self.pi_b = self.s + V - np.sum(rho, axis=1)   # (K,)
+        K, V = self.b_probs.shape  # η is (K,V)
+        self.pi_a = self.r + np.sum(self.b_probs, axis=1)       # (K,)
+        self.pi_b = self.s + V - np.sum(self.b_probs, axis=1)   # (K,)
         self.pi_a = np.maximum(self.pi_a, self.epsilon)
         self.pi_b = np.maximum(self.pi_b, self.epsilon)
 
@@ -638,7 +579,7 @@ class Model(object):
         for k in range(K):
             keep = self._greedy_graph_mask(logits[k])
             self.b_mask[k, :] = keep
-            self.b_probs[k, ~keep] = 0.0
+            self.b_probs[k, ~keep] = self.epsilon
         self._mask_ready = True
 
 
@@ -648,12 +589,15 @@ class Model(object):
         """
         if self.b_probs is None:
             raise RuntimeError("b_probs must be initialized before calling update_b.")
-        logits = self._structural_logits()
+        psi_a  = psi(self.pi_a)[:, None]
+        psi_b  = psi(self.pi_b)[:, None]
+        psi_e  = psi(self.zeta) - psi(np.sum(self.zeta, axis=1))[:, None]
+        logits = (psi_a - psi_b) + psi_e
 
         new_b = expit(logits)
         new_b = np.clip(new_b, self.epsilon, 1.0 - self.epsilon)
         self.b_probs = (1.0 - self.b_stepsize) * self.b_probs + self.b_stepsize * new_b
-        self.b_probs = np.clip(self.b_probs, 0.0, 1.0)
+        self.b_probs = np.clip(self.b_probs, self.epsilon, 1.0 - self.epsilon)
 
         self._apply_interval_projection(logits)
 
@@ -670,8 +614,15 @@ class Model(object):
 
         # sum over d: (D,V,1)*(D,V,K) → (D,V,K) → sum over axis=0 → (K,V)
         counts = np.einsum('dv,dvk->kv', doc, self.phi)  # (K,V)
-        beta_support = self._beta_support_from_rho()
-        new_zeta = self.eta0[None, :] * beta_support + counts
+        new_zeta = self.eta0[None, :] * self.b_probs + counts
+
+        # Optional long-read co-occurrence prior: bias ζ_{k,v} so that
+        # introns that frequently co-occur with already-included introns
+        # receive additional pseudo-counts.
+        if getattr(self, "cooc_strength", 0.0) > 0.0 and getattr(self, "cooc_matrix", None) is not None:
+            # cooc_matrix is (V,V); b_probs is (K,V) → cooc_term is (K,V)
+            cooc_term = self.b_probs @ self.cooc_matrix
+            new_zeta = new_zeta + self.cooc_strength * cooc_term
 
         new_zeta = np.maximum(new_zeta, self.epsilon)
         if self.zeta is None:
@@ -764,6 +715,14 @@ class Model(object):
         if eta0.ndim == 0:
             eta0 = np.full(V, eta0)
         self.eta0 = eta0
+
+        # Optional intron co-occurrence prior derived from Megadepth --junctions.
+        # If present on the Gene, this is a (V,V) matrix where cooc[v,u] reflects
+        # how strongly intron v tends to co-occur with intron u in multi-junction reads.
+        if hasattr(gene, "cooc_matrix") and gene.cooc_matrix is not None:
+            self.cooc_matrix = np.asarray(gene.cooc_matrix, dtype=float)
+        else:
+            self.cooc_matrix = None
 
         # ─── 2) Initialize variational state via Gibbs-style seeding ─────────
         self._initialize_cavi_from_gibbs(gene, n_k)
@@ -1075,6 +1034,14 @@ class Model(object):
             eta0 = np.full(V, eta0)
         self.eta0 = eta0
 
+        # Optional intron co-occurrence prior derived from Megadepth --junctions.
+        # If present on the Gene, this is a (V,V) matrix where cooc[v,u] reflects
+        # how strongly intron v tends to co-occur with intron u in multi-junction reads.
+        if hasattr(gene, "cooc_matrix") and gene.cooc_matrix is not None:
+            self.cooc_matrix = np.asarray(gene.cooc_matrix, dtype=float)
+        else:
+            self.cooc_matrix = None
+
         # Seed variational parameters (reuses Gibbs-style initializer)
         self._initialize_cavi_from_gibbs(gene, K)
 
@@ -1149,12 +1116,17 @@ class Model(object):
 
             scale = float(D) / float(M)
             counts_scaled = scale * np.einsum('mv,mvk->kv', Xb, phi_b)
-            beta_support = self._beta_support_from_rho()
-            hat_zeta = self.eta0[None, :] * beta_support + counts_scaled
+            hat_zeta = self.eta0[None, :] * self.b_probs + counts_scaled
+
+            # Optional long-read co-occurrence prior: bias ζ_{k,v} with
+            # co-occurrence-derived pseudo-counts.
+            if getattr(self, "cooc_strength", 0.0) > 0.0 and getattr(self, "cooc_matrix", None) is not None:
+                cooc_term = self.b_probs @ self.cooc_matrix
+                hat_zeta = hat_zeta + self.cooc_strength * cooc_term
+
             hat_zeta = np.maximum(hat_zeta, self.epsilon)
 
-            rho = self._rho()
-            sum_b = np.sum(rho, axis=1)
+            sum_b = np.sum(self.b_probs, axis=1)
             hat_a = self.r + sum_b
             hat_b = self.s + V - sum_b
 
@@ -1166,11 +1138,14 @@ class Model(object):
             self.zeta = (1.0 - rho_t) * self.zeta + rho_t * hat_zeta
             self.zeta = np.maximum(self.zeta, self.epsilon)
 
-            logits = self._structural_logits()
+            psi_a = psi(self.pi_a)[:, None]
+            psi_b = psi(self.pi_b)[:, None]
+            psi_e = psi(self.zeta) - psi(np.sum(self.zeta, axis=1))[:, None]
+            logits = (psi_a - psi_b) + psi_e
             new_b_probs = expit(logits)
             new_b_probs = np.clip(new_b_probs, self.epsilon, 1.0 - self.epsilon)
             self.b_probs = (1.0 - rho_t) * self.b_probs + rho_t * new_b_probs
-            self.b_probs = np.clip(self.b_probs, 0.0, 1.0)
+            self.b_probs = np.clip(self.b_probs, self.epsilon, 1.0 - self.epsilon)
 
             self._apply_interval_projection(logits)
 
@@ -1357,7 +1332,7 @@ class Model(object):
                     self.z[doc, v, k] = np.count_nonzero(tempz == k)
 
     def update_theta_gibbs(self):
-        """Update theta variable in the model"""
+        """Update \theta variable in the model"""
     
         # Sample from full conditional of Theta
         for doc in range(self.run_info['N_D']):
@@ -1365,7 +1340,7 @@ class Model(object):
         self.theta[self.theta < self.epsilon] = self.epsilon
 
     def update_pi_gibbs(self):
-        """Update pi variable in the model"""
+        """Update \pi variable in the model"""
     
         # update for pi
         m = np.sum(self.b, axis=1)
@@ -1416,13 +1391,22 @@ class Model(object):
                 self.b[k, :] = deepcopy(temp)
 
     def update_beta_gibbs(self):
-        """Update beta variable in the model"""
+        """Update \beta variable in the model"""
     
         # Sample from full conditional of Beta
         # Z_matrix[:, v, k] counts the number of times word v is assigned to cluster k throughout the whole corpus
         for k in range(self.run_info['N_K']):
             temp_b = np.array([v + self.epsilon if v == 0 else v for v in list(self.b[k, :])])
             prior_vec = temp_b * self.eta
+
+            # Optional long-read co-occurrence prior: bias the Dirichlet
+            # concentration for β_k so that introns that co-occur with the
+            # currently included introns in cluster k receive additional
+            # pseudo-counts.
+            if getattr(self, "cooc_strength", 0.0) > 0.0 and getattr(self, "cooc_matrix", None) is not None:
+                b_row = self.b[k, :].astype(float)
+                cooc_term = b_row @ self.cooc_matrix  # (V,)
+                prior_vec = prior_vec + self.cooc_strength * cooc_term
 
             alpha_vec = prior_vec + np.sum(self.z[:, :, k], axis=0)
             alpha_vec = np.maximum(alpha_vec, self.epsilon)
@@ -1463,6 +1447,14 @@ class Model(object):
 
     def train_gibbs(self, gene, n_k, n_iter, burn_in, convergence_checkpoint_interval, verbose):
         """Run Gibbs sampling on the data"""
+    
+        # Optional intron co-occurrence prior derived from Megadepth --junctions.
+        # If present on the Gene, this is a (V,V) matrix where cooc[v,u] reflects
+        # how strongly intron v tends to co-occur with intron u in multi-junction reads.
+        if hasattr(gene, "cooc_matrix") and gene.cooc_matrix is not None:
+            self.cooc_matrix = np.asarray(gene.cooc_matrix, dtype=float)
+        else:
+            self.cooc_matrix = None
 
         self.initialize_vars_gibbs(gene, n_k)
         self.make_run_info_gibbs(gene, n_k, burn_in, convergence_checkpoint_interval, n_iter)
